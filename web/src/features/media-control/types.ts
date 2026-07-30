@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 export type MediaType = 'image' | 'video'
 export type ProviderMediaType = MediaType | 'image_and_video'
+export type MediaProviderAdapterType = 'mock' | 'openai_images'
 
 export type MediaModel = {
   id: string
@@ -41,6 +42,7 @@ export type MediaProvider = {
   id: string
   code: string
   name: string
+  adapter_type: MediaProviderAdapterType
   media_type: ProviderMediaType
   base_url: string
   has_api_key: boolean
@@ -54,6 +56,7 @@ export type MediaProvider = {
 export type MediaProviderInput = {
   code: string
   name: string
+  adapter_type: MediaProviderAdapterType
   media_type: ProviderMediaType
   base_url: string
   api_key: string

@@ -38,6 +38,11 @@ const mediaTypeLabels = {
   image_and_video: 'Image and video',
 } as const
 
+const adapterTypeLabels = {
+  mock: 'Mock',
+  openai_images: 'OpenAI-compatible Images',
+} as const
+
 type MediaProvidersTableProps = {
   items: MediaProvider[]
   onEdit: (item: MediaProvider) => void
@@ -59,6 +64,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
       <TableHeader>
         <TableRow>
           <TableHead>{t('Provider')}</TableHead>
+          <TableHead>{t('Adapter type')}</TableHead>
           <TableHead>{t('Media type')}</TableHead>
           <TableHead>{t('Base URL')}</TableHead>
           <TableHead>{t('API Key')}</TableHead>
@@ -81,6 +87,11 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
                   </div>
                 </div>
               </div>
+            </TableCell>
+            <TableCell>
+              <Badge variant='secondary'>
+                {t(adapterTypeLabels[item.adapter_type])}
+              </Badge>
             </TableCell>
             <TableCell>
               <Badge variant='outline'>

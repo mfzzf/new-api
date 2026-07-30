@@ -55,6 +55,26 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	return err
 }
 
+// applyRelayPreConsumePolicy disables the trusted-wallet bypass for relay modes
+// that must reserve their full estimated cost before starting paid upstream
+// work. Image generation is synchronous but has the same non-idempotent cost
+// risk as asynchronous generation tasks.
+func applyRelayPreConsumePolicy(info *relaycommon.RelayInfo) {
+	if info.RelayMode == relayconstant.RelayModeImagesGenerations {
+		info.ForcePreConsume = true
+	}
+}
+
+// shouldRetryRelay applies relay-mode-specific safety before the shared channel
+// retry policy. Synchronous image generation is non-idempotent: retrying after
+// an ambiguous upstream failure can create and charge for another image.
+func shouldRetryRelay(c *gin.Context, info *relaycommon.RelayInfo, relayErr *types.NewAPIError, retryTimes int) bool {
+	if info != nil && info.RelayMode == relayconstant.RelayModeImagesGenerations {
+		return false
+	}
+	return shouldRetry(c, relayErr, retryTimes)
+}
+
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	if strings.Contains(c.Request.URL.Path, "embed") {
@@ -122,6 +142,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	applyRelayPreConsumePolicy(relayInfo)
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -231,7 +252,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetryRelay(c, relayInfo, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
 	}

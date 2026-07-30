@@ -55,6 +55,7 @@ export const mediaModelFormSchema = z.object({
 export const mediaProviderFormSchema = z.object({
   code: resourceKey,
   name: z.string().trim().min(1, 'Provider name is required'),
+  adapter_type: z.enum(['mock', 'openai_images']),
   media_type: z.enum(['image', 'video', 'image_and_video']),
   base_url: z.url('Enter a valid provider Base URL'),
   api_key: z.string().trim().max(8192, 'Use at most 8192 characters'),

@@ -71,6 +71,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
     defaultValues: {
       code: '',
       name: '',
+      adapter_type: 'mock',
       media_type: 'image_and_video',
       base_url: '',
       api_key: '',
@@ -99,6 +100,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
         ? {
             code: current.code,
             name: current.name,
+            adapter_type: current.adapter_type ?? 'mock',
             media_type: current.media_type,
             base_url: current.base_url,
             api_key: '',
@@ -108,6 +110,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
         : {
             code: '',
             name: '',
+            adapter_type: 'mock',
             media_type: 'image_and_video',
             base_url: '',
             api_key: '',
@@ -128,6 +131,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
     mutation.mutate({
       code: values.code,
       name: values.name,
+      adapter_type: values.adapter_type,
       media_type: values.media_type,
       base_url: values.base_url,
       api_key: values.api_key,
@@ -194,6 +198,27 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
           />
           <FormField
             control={form.control}
+            name='adapter_type'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Adapter type')}</FormLabel>
+                <FormControl>
+                  <select className={selectClassName} {...field}>
+                    <option value='mock'>{t('Mock')}</option>
+                    <option value='openai_images'>
+                      {t('OpenAI-compatible Images')}
+                    </option>
+                  </select>
+                </FormControl>
+                <FormDescription>
+                  {t('Selects the runtime adapter used for this provider.')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
             name='media_type'
             render={({ field }) => (
               <FormItem>
@@ -215,7 +240,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             control={form.control}
             name='base_url'
             render={({ field }) => (
-              <FormItem>
+              <FormItem className='sm:col-span-2'>
                 <FormLabel>{t('Base URL')}</FormLabel>
                 <FormControl>
                   <Input

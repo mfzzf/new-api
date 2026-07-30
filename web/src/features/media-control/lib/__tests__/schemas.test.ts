@@ -71,6 +71,7 @@ describe('media control form validation', () => {
     const input = {
       code: 'fal-ai',
       name: 'FAL AI',
+      adapter_type: 'mock',
       media_type: 'image_and_video',
       base_url: 'https://api.example/v1',
       metadata_json: '{}',
@@ -87,6 +88,40 @@ describe('media control form validation', () => {
     assert.equal(
       mediaProviderFormSchema.safeParse({ ...input, api_key: '' }).success,
       true
+    )
+  })
+
+  test('accepts only registered provider adapter types', () => {
+    const input = {
+      code: 'image-provider',
+      name: 'Image Provider',
+      media_type: 'image',
+      base_url: 'https://api.example/v1',
+      api_key: 'provider-secret',
+      metadata_json: '{}',
+      enabled: true,
+    } as const
+
+    assert.equal(
+      mediaProviderFormSchema.safeParse({
+        ...input,
+        adapter_type: 'mock',
+      }).success,
+      true
+    )
+    assert.equal(
+      mediaProviderFormSchema.safeParse({
+        ...input,
+        adapter_type: 'openai_images',
+      }).success,
+      true
+    )
+    assert.equal(
+      mediaProviderFormSchema.safeParse({
+        ...input,
+        adapter_type: 'unknown',
+      }).success,
+      false
     )
   })
 
