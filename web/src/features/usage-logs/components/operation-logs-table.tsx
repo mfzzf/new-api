@@ -38,6 +38,7 @@ import type {
   MediaOperationLog,
   MediaOperationResourceType,
 } from '@/features/media-control/types'
+import { toIntlLocale } from '@/i18n/languages'
 import { cn } from '@/lib/utils'
 
 const pageSize = 20
@@ -111,6 +112,7 @@ function OperationTableRows({
   isError: boolean
 }) {
   const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   if (isLoading) {
     return (
       <TableRow>
@@ -147,7 +149,7 @@ function OperationTableRows({
   return items.map((item) => (
     <TableRow key={item.id}>
       <TableCell className='text-muted-foreground font-mono text-xs'>
-        {new Date(item.created_at).toLocaleString(i18n.language)}
+        {new Date(item.created_at).toLocaleString(locale)}
       </TableCell>
       <TableCell>
         <div className='font-medium'>
