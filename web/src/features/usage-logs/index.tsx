@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -27,6 +27,7 @@ import { CacheStatsDialog } from '@/features/system-settings/general/channel-aff
 import { useSidebarConfig } from '@/hooks/use-sidebar-config'
 
 import { UserInfoDialog } from './components/dialogs/user-info-dialog'
+import { OperationLogsTable } from './components/operation-logs-table'
 import {
   type LogsViewScope,
   UsageLogsProvider,
@@ -42,6 +43,7 @@ import {
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
 const TASK_LOG_SECTIONS = ['drawing', 'task'] as const
+const MANAGEMENT_LOG_SECTIONS = ['common', 'operations'] as const
 
 const SECTION_META: Record<UsageLogsSectionId, { titleKey: string }> = {
   common: {
@@ -52,6 +54,9 @@ const SECTION_META: Record<UsageLogsSectionId, { titleKey: string }> = {
   },
   task: {
     titleKey: 'Task Logs',
+  },
+  operations: {
+    titleKey: 'Operation Logs',
   },
 }
 
@@ -117,10 +122,25 @@ function UsageLogsContent() {
     [setViewScope]
   )
 
-  const pageMeta =
-    activeCategory === 'common' ? SECTION_META.common : SECTION_META.task
+  const pageMeta = SECTION_META[activeCategory]
+  const showManagementSwitcher =
+    canManageScope &&
+    (activeCategory === 'common' || activeCategory === 'operations')
   const showTaskSwitcher =
-    activeCategory !== 'common' && visibleSections.length > 1
+    (activeCategory === 'drawing' || activeCategory === 'task') &&
+    visibleSections.length > 1
+  let logContent: ReactNode
+  if (activeCategory === 'operations') {
+    logContent = canManageScope ? (
+      <OperationLogsTable />
+    ) : (
+      <div className='text-muted-foreground flex h-full items-center justify-center'>
+        {t('Administrator access required')}
+      </div>
+    )
+  } else {
+    logContent = <UsageLogsTable logCategory={activeCategory} />
+  }
 
   return (
     <>
@@ -128,7 +148,7 @@ function UsageLogsContent() {
         <SectionPageLayout.Title>
           {t(pageMeta.titleKey)}
         </SectionPageLayout.Title>
-        {canManageScope && (
+        {canManageScope && activeCategory !== 'operations' && (
           <SectionPageLayout.Actions>
             <Tabs value={viewScope} onValueChange={handleViewScopeChange}>
               <TabsList>
@@ -140,6 +160,17 @@ function UsageLogsContent() {
         )}
         <SectionPageLayout.Content>
           <div className='flex h-full min-h-0 flex-col gap-4'>
+            {showManagementSwitcher && (
+              <Tabs value={activeCategory} onValueChange={handleSectionChange}>
+                <TabsList>
+                  {MANAGEMENT_LOG_SECTIONS.map((section) => (
+                    <TabsTrigger key={section} value={section}>
+                      {t(SECTION_META[section].titleKey)}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            )}
             {showTaskSwitcher && (
               <Tabs value={activeCategory} onValueChange={handleSectionChange}>
                 <TabsList className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'>
@@ -151,9 +182,7 @@ function UsageLogsContent() {
                 </TabsList>
               </Tabs>
             )}
-            <div className='min-h-0 flex-1'>
-              <UsageLogsTable logCategory={activeCategory} />
-            </div>
+            <div className='min-h-0 flex-1'>{logContent}</div>
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

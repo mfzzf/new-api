@@ -5281,6 +5281,17 @@
     "The actual model identifier sent to the provider.": "The actual model identifier sent to the provider.",
     "TPM / RPM": "TPM / RPM",
     "TPM limit": "TPM limit",
-    "Unable to load the media control plane.": "Unable to load the media control plane."
+    "Unable to load the media control plane.": "Unable to load the media control plane.",
+    "Operation Logs": "Operation Logs",
+    "Operator": "Operator",
+    "Resource": "Resource",
+    "All actions": "All actions",
+    "All resources": "All resources",
+    "No operation logs found": "No operation logs found",
+    "Unable to load operation logs.": "Unable to load operation logs.",
+    "Search operators or resources...": "Search operators or resources...",
+    "API Key changed": "API Key changed",
+    "{{count}} operation logs": "{{count}} operation logs",
+    "Administrator access required": "Administrator access required"
   }
 }

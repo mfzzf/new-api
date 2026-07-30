@@ -85,3 +85,39 @@ export type RouteNodeInput = Omit<
 }
 
 export type MediaControlSection = 'models' | 'providers' | 'route-nodes'
+
+export type MediaOperationAction = 'create' | 'update' | 'delete'
+export type MediaOperationResourceType = 'model' | 'provider' | 'route_node'
+
+export type MediaOperationActor = {
+  id: string
+  username: string
+  display_name: string
+  role: number
+}
+
+export type MediaOperationLog = {
+  id: string
+  actor: MediaOperationActor
+  action: MediaOperationAction
+  resource_type: MediaOperationResourceType
+  resource_id: string
+  resource_name: string
+  details: Record<string, unknown>
+  created_at: string
+}
+
+export type MediaOperationLogPage = {
+  items: MediaOperationLog[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type MediaOperationLogQuery = {
+  page?: number
+  page_size?: number
+  action?: MediaOperationAction | ''
+  resource_type?: MediaOperationResourceType | ''
+  search?: string
+}

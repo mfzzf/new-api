@@ -5281,6 +5281,17 @@
     "The actual model identifier sent to the provider.": "实际发送给供应商的模型标识。",
     "TPM / RPM": "TPM / RPM",
     "TPM limit": "TPM 限制",
-    "Unable to load the media control plane.": "无法加载图视频控制面。"
+    "Unable to load the media control plane.": "无法加载图视频控制面。",
+    "Operation Logs": "操作记录",
+    "Operator": "操作人",
+    "Resource": "资源",
+    "All actions": "全部操作",
+    "All resources": "全部资源",
+    "No operation logs found": "暂无操作记录",
+    "Unable to load operation logs.": "无法加载操作记录。",
+    "Search operators or resources...": "搜索操作人或资源...",
+    "API Key changed": "API Key 已修改",
+    "{{count}} operation logs": "共 {{count}} 条操作记录",
+    "Administrator access required": "需要管理员权限"
   }
 }

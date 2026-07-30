@@ -26,6 +26,8 @@ import { useAuthStore } from '@/stores/auth-store'
 import type {
   MediaModel,
   MediaModelInput,
+  MediaOperationLogPage,
+  MediaOperationLogQuery,
   MediaProvider,
   MediaProviderInput,
   RouteNode,
@@ -170,4 +172,14 @@ export function updateRouteNode(
 
 export function deleteRouteNode(id: string): Promise<{ id: string }> {
   return getData(mediaControlApi.delete(`/admin/v1/media/route-nodes/${id}`))
+}
+
+export function listMediaOperationLogs(
+  query: MediaOperationLogQuery
+): Promise<MediaOperationLogPage> {
+  return getData(
+    mediaControlApi.get('/admin/v1/media/operation-logs', {
+      params: query,
+    })
+  )
 }
