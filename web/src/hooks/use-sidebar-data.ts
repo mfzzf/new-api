@@ -126,7 +126,7 @@ export function useSidebarData(): SidebarData {
             icon: Radio,
           },
           {
-            title: t('Models'),
+            title: `LLM ${t('Models')}`,
             url: '/models/metadata',
             icon: Box,
           },

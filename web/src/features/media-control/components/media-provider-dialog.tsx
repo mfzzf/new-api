@@ -73,7 +73,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
       name: '',
       media_type: 'image_and_video',
       base_url: '',
-      credential_ref: '',
+      api_key: '',
       metadata_json: '{}',
       enabled: true,
     },
@@ -101,7 +101,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name: current.name,
             media_type: current.media_type,
             base_url: current.base_url,
-            credential_ref: current.credential_ref,
+            api_key: '',
             metadata_json: JSON.stringify(current.metadata, null, 2),
             enabled: current.enabled,
           }
@@ -110,7 +110,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name: '',
             media_type: 'image_and_video',
             base_url: '',
-            credential_ref: '',
+            api_key: '',
             metadata_json: '{}',
             enabled: true,
           }
@@ -118,12 +118,19 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
   }, [current, form, open])
 
   const submit = (values: MediaProviderFormValues) => {
+    if ((!isEdit || !current?.has_api_key) && !values.api_key) {
+      form.setError('api_key', {
+        type: 'required',
+        message: t('API Key is required'),
+      })
+      return
+    }
     mutation.mutate({
       code: values.code,
       name: values.name,
       media_type: values.media_type,
       base_url: values.base_url,
-      credential_ref: values.credential_ref,
+      api_key: values.api_key,
       metadata: JSON.parse(values.metadata_json) as Record<string, unknown>,
       enabled: values.enabled,
     })
@@ -134,9 +141,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
       open={props.open}
       onOpenChange={props.onOpenChange}
       title={t(isEdit ? 'Edit media provider' : 'Create media provider')}
-      description={t(
-        'Configure the provider endpoint and a server-side credential reference.'
-      )}
+      description={t('Configure the provider endpoint and API Key.')}
       contentHeight='min(620px, calc(100vh - 14rem))'
       footer={
         <>
@@ -224,17 +229,29 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
           />
           <FormField
             control={form.control}
-            name='credential_ref'
+            name='api_key'
             render={({ field }) => (
               <FormItem className='sm:col-span-2'>
-                <FormLabel>{t('Credential reference')}</FormLabel>
+                <FormLabel>{t('API Key')}</FormLabel>
                 <FormControl>
-                  <Input placeholder='secret://media/fal-ai' {...field} />
+                  <Input
+                    type='password'
+                    autoComplete='new-password'
+                    placeholder='sk-...'
+                    {...field}
+                  />
                 </FormControl>
                 <FormDescription>
-                  {t(
-                    'Store only a secret-manager reference, never an API key.'
-                  )}
+                  {isEdit && current?.has_api_key
+                    ? t(
+                        'API Key configured as {{hint}}. Leave blank to keep it.',
+                        {
+                          hint: current.api_key_hint || '••••',
+                        }
+                      )
+                    : t(
+                        'The API Key is encrypted at rest and is never returned after saving.'
+                      )}
                 </FormDescription>
                 <FormMessage />
               </FormItem>

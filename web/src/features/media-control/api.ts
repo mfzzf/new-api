@@ -42,15 +42,24 @@ type RetriableRequest = AxiosRequestConfig & {
   mediaControlAuthRetry?: boolean
 }
 
-const controlPlaneBaseURL =
-  import.meta.env.VITE_MEDIA_CONTROL_PLANE_URL || 'http://localhost:3100'
+const configuredControlPlaneURL =
+  import.meta.env.VITE_MEDIA_CONTROL_PLANE_URL?.trim()
+
+function resolveControlPlaneBaseURL() {
+  if (configuredControlPlaneURL && configuredControlPlaneURL !== 'auto') {
+    return configuredControlPlaneURL
+  }
+
+  const controlPlaneURL = new URL(window.location.origin)
+  controlPlaneURL.port = '3100'
+  return controlPlaneURL.origin
+}
+
+const controlPlaneBaseURL = resolveControlPlaneBaseURL()
 
 export const mediaControlApi = axios.create({
   baseURL: controlPlaneBaseURL,
   withCredentials: true,
-  headers: {
-    'Cache-Control': 'no-store',
-  },
 })
 
 mediaControlApi.interceptors.request.use((config) => {

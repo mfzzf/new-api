@@ -43,17 +43,23 @@ export type MediaProvider = {
   name: string
   media_type: ProviderMediaType
   base_url: string
-  credential_ref: string
+  has_api_key: boolean
+  api_key_hint: string
   metadata: Record<string, unknown>
   enabled: boolean
   created_at: string
   updated_at: string
 }
 
-export type MediaProviderInput = Omit<
-  MediaProvider,
-  'id' | 'created_at' | 'updated_at'
->
+export type MediaProviderInput = {
+  code: string
+  name: string
+  media_type: ProviderMediaType
+  base_url: string
+  api_key: string
+  metadata: Record<string, unknown>
+  enabled: boolean
+}
 
 export type RouteNode = {
   id: string

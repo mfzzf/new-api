@@ -61,7 +61,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
           <TableHead>{t('Provider')}</TableHead>
           <TableHead>{t('Media type')}</TableHead>
           <TableHead>{t('Base URL')}</TableHead>
-          <TableHead>{t('Credential reference')}</TableHead>
+          <TableHead>{t('API Key')}</TableHead>
           <TableHead>{t('Status')}</TableHead>
           <TableHead className='text-right'>{t('Actions')}</TableHead>
         </TableRow>
@@ -93,9 +93,15 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
               </span>
             </TableCell>
             <TableCell>
-              <code className='bg-muted rounded px-2 py-1 text-xs'>
-                {item.credential_ref}
-              </code>
+              {item.has_api_key ? (
+                <code className='bg-muted rounded px-2 py-1 text-xs'>
+                  {t('Configured')} · {item.api_key_hint || '••••'}
+                </code>
+              ) : (
+                <span className='text-muted-foreground text-xs'>
+                  {t('Not configured')}
+                </span>
+              )}
             </TableCell>
             <TableCell>
               <Badge

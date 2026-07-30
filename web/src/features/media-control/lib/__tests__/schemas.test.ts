@@ -19,7 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { mediaModelFormSchema, routeNodeFormSchema } from '../schemas'
+import {
+  mediaModelFormSchema,
+  mediaProviderFormSchema,
+  routeNodeFormSchema,
+} from '../schemas'
 
 describe('media control form validation', () => {
   test('accepts model metadata only when it is a JSON object', () => {
@@ -61,6 +65,29 @@ describe('media control form validation', () => {
     })
 
     assert.equal(result.success, false)
+  })
+
+  test('accepts a write-only API key and permits blank values on edit', () => {
+    const input = {
+      code: 'fal-ai',
+      name: 'FAL AI',
+      media_type: 'image_and_video',
+      base_url: 'https://api.example/v1',
+      metadata_json: '{}',
+      enabled: true,
+    } as const
+
+    assert.equal(
+      mediaProviderFormSchema.safeParse({
+        ...input,
+        api_key: 'provider-secret',
+      }).success,
+      true
+    )
+    assert.equal(
+      mediaProviderFormSchema.safeParse({ ...input, api_key: '' }).success,
+      true
+    )
   })
 
   test('preserves zero weight as a valid disabled-from-selection value', () => {

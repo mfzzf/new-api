@@ -57,7 +57,7 @@ export const mediaProviderFormSchema = z.object({
   name: z.string().trim().min(1, 'Provider name is required'),
   media_type: z.enum(['image', 'video', 'image_and_video']),
   base_url: z.url('Enter a valid provider Base URL'),
-  credential_ref: z.string().trim().min(1, 'Credential reference is required'),
+  api_key: z.string().trim().max(8192, 'Use at most 8192 characters'),
   metadata_json: metadataJSON,
   enabled: z.boolean(),
 })
