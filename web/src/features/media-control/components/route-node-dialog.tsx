@@ -39,6 +39,10 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 
 import { createRouteNode, mediaControlQueryKeys, updateRouteNode } from '../api'
+import {
+  formatProviderAccountOption,
+  MEDIA_PROVIDER_ADAPTER_LABELS,
+} from '../lib/provider-display'
 import { routeNodeFormSchema, type RouteNodeFormValues } from '../lib/schemas'
 import type {
   MediaModel,
@@ -150,7 +154,7 @@ export function RouteNodeDialog(props: RouteNodeDialogProps) {
       onOpenChange={props.onOpenChange}
       title={t(isEdit ? 'Edit route node' : 'Create route node')}
       description={t(
-        'A provider and a platform model form one independently weighted route node.'
+        'A provider account and a platform model form one independently weighted route node.'
       )}
       contentHeight='min(620px, calc(100vh - 14rem))'
       footer={
@@ -201,13 +205,18 @@ export function RouteNodeDialog(props: RouteNodeDialogProps) {
             name='provider_id'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Provider')}</FormLabel>
+                <FormLabel>{t('Provider account')}</FormLabel>
                 <FormControl>
                   <select className={selectClassName} {...field}>
-                    <option value=''>{t('Select a provider')}</option>
+                    <option value=''>{t('Select a provider account')}</option>
                     {props.providers.map((provider) => (
                       <option key={provider.id} value={provider.id}>
-                        {provider.name} · {provider.media_type}
+                        {formatProviderAccountOption(
+                          provider,
+                          t(
+                            MEDIA_PROVIDER_ADAPTER_LABELS[provider.adapter_type]
+                          )
+                        )}
                       </option>
                     ))}
                   </select>
@@ -226,7 +235,9 @@ export function RouteNodeDialog(props: RouteNodeDialogProps) {
                   <Input placeholder='provider/image-pro-v2' {...field} />
                 </FormControl>
                 <FormDescription>
-                  {t('The actual model identifier sent to the provider.')}
+                  {t(
+                    'The actual model identifier sent through this provider account.'
+                  )}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -305,7 +316,7 @@ export function RouteNodeDialog(props: RouteNodeDialogProps) {
                 <FormControl>
                   <Input
                     placeholder={t(
-                      'Adjust provider weight after quota recovery'
+                      'Adjust provider account weight after quota recovery'
                     )}
                     {...field}
                   />

@@ -88,7 +88,9 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
       void queryClient.invalidateQueries({
         queryKey: mediaControlQueryKeys.providers(),
       })
-      toast.success(t(isEdit ? 'Provider updated' : 'Provider created'))
+      toast.success(
+        t(isEdit ? 'Provider account updated' : 'Provider account created')
+      )
       props.onOpenChange(false)
     },
   })
@@ -144,8 +146,10 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t(isEdit ? 'Edit media provider' : 'Create media provider')}
-      description={t('Configure the provider endpoint and API Key.')}
+      title={t(isEdit ? 'Edit provider account' : 'Create provider account')}
+      description={t(
+        'Configure an independent provider account endpoint and API Key.'
+      )}
       contentHeight='min(620px, calc(100vh - 14rem))'
       footer={
         <>
@@ -175,7 +179,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name='code'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Provider code')}</FormLabel>
+                <FormLabel>{t('Provider account code')}</FormLabel>
                 <FormControl>
                   <Input placeholder='fal-ai' {...field} />
                 </FormControl>
@@ -188,7 +192,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name='name'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Provider name')}</FormLabel>
+                <FormLabel>{t('Provider account name')}</FormLabel>
                 <FormControl>
                   <Input placeholder='FAL AI' {...field} />
                 </FormControl>
@@ -211,7 +215,9 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
                   </select>
                 </FormControl>
                 <FormDescription>
-                  {t('Selects the runtime adapter used for this provider.')}
+                  {t(
+                    'Adapter is a reusable protocol implementation. Multiple provider accounts can use the same Adapter.'
+                  )}
                 </FormDescription>
                 <FormMessage />
               </FormItem>
@@ -287,7 +293,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name='metadata_json'
             render={({ field }) => (
               <FormItem className='sm:col-span-2'>
-                <FormLabel>{t('Provider metadata')}</FormLabel>
+                <FormLabel>{t('Provider account metadata')}</FormLabel>
                 <FormControl>
                   <Textarea rows={5} className='font-mono text-xs' {...field} />
                 </FormControl>
@@ -305,7 +311,7 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
                     <FormLabel>{t('Enabled')}</FormLabel>
                     <FormDescription>
                       {t(
-                        'Disabled providers are excluded from all route nodes.'
+                        'Disabled provider accounts are excluded from all route nodes.'
                       )}
                     </FormDescription>
                   </div>

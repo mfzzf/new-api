@@ -30,6 +30,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
+import { MEDIA_PROVIDER_ADAPTER_LABELS } from '../lib/provider-display'
 import type { MediaModel, MediaProvider, RouteNode } from '../types'
 
 type RouteNodesTableProps = {
@@ -56,7 +57,7 @@ export function RouteNodesTable(props: RouteNodesTableProps) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>{t('Provider / account')}</TableHead>
+          <TableHead>{t('Provider account')}</TableHead>
           <TableHead>{t('Platform model')}</TableHead>
           <TableHead>{t('Provider model')}</TableHead>
           <TableHead>{t('TPM / RPM')}</TableHead>
@@ -76,8 +77,13 @@ export function RouteNodesTable(props: RouteNodesTableProps) {
                 <div className='font-medium'>
                   {provider?.name ?? item.provider_id}
                 </div>
-                <div className='text-muted-foreground font-mono text-xs'>
-                  {provider?.code ?? item.provider_id}
+                <div className='text-muted-foreground flex items-center gap-2 font-mono text-xs'>
+                  <span>{provider?.code ?? item.provider_id}</span>
+                  {provider && (
+                    <Badge variant='secondary'>
+                      {t(MEDIA_PROVIDER_ADAPTER_LABELS[provider.adapter_type])}
+                    </Badge>
+                  )}
                 </div>
               </TableCell>
               <TableCell>

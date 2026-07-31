@@ -56,12 +56,12 @@ type DeleteTarget =
 
 const sectionLabels: Record<MediaControlSection, string> = {
   models: 'Models',
-  providers: 'Providers',
+  providers: 'Provider accounts',
   'route-nodes': 'Route nodes',
 }
 const createLabels: Record<MediaControlSection, string> = {
   models: 'Create model',
-  providers: 'Create provider',
+  providers: 'Create provider account',
   'route-nodes': 'Create route node',
 }
 const emptyModels: MediaModel[] = []
@@ -205,7 +205,7 @@ export function MediaControl() {
             disabled={routeCreateBlocked}
             title={
               routeCreateBlocked
-                ? t('Create at least one model and provider first')
+                ? t('Create at least one model and provider account first')
                 : undefined
             }
           >
@@ -237,7 +237,9 @@ export function MediaControl() {
                 <Input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder={t('Search models, providers, or routes...')}
+                  placeholder={t(
+                    'Search models, provider accounts, or routes...'
+                  )}
                   className='pl-8'
                 />
               </div>

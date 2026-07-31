@@ -30,17 +30,13 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
+import { MEDIA_PROVIDER_ADAPTER_LABELS } from '../lib/provider-display'
 import type { MediaProvider } from '../types'
 
 const mediaTypeLabels = {
   image: 'Image',
   video: 'Video',
   image_and_video: 'Image and video',
-} as const
-
-const adapterTypeLabels = {
-  mock: 'Mock',
-  openai_images: 'OpenAI-compatible Images',
 } as const
 
 type MediaProvidersTableProps = {
@@ -54,7 +50,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
   if (props.items.length === 0) {
     return (
       <div className='text-muted-foreground flex h-52 items-center justify-center text-sm'>
-        {t('No media providers found')}
+        {t('No provider accounts found')}
       </div>
     )
   }
@@ -63,7 +59,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>{t('Provider')}</TableHead>
+          <TableHead>{t('Provider account')}</TableHead>
           <TableHead>{t('Adapter type')}</TableHead>
           <TableHead>{t('Media type')}</TableHead>
           <TableHead>{t('Base URL')}</TableHead>
@@ -90,7 +86,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
             </TableCell>
             <TableCell>
               <Badge variant='secondary'>
-                {t(adapterTypeLabels[item.adapter_type])}
+                {t(MEDIA_PROVIDER_ADAPTER_LABELS[item.adapter_type])}
               </Badge>
             </TableCell>
             <TableCell>
@@ -131,7 +127,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
                 <Button
                   variant='ghost'
                   size='icon-sm'
-                  aria-label={t('Edit provider')}
+                  aria-label={t('Edit provider account')}
                   onClick={() => props.onEdit(item)}
                 >
                   <Pencil />
@@ -139,7 +135,7 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
                 <Button
                   variant='ghost'
                   size='icon-sm'
-                  aria-label={t('Delete provider')}
+                  aria-label={t('Delete provider account')}
                   onClick={() => props.onDelete(item)}
                 >
                   <Trash2 className='text-destructive' />

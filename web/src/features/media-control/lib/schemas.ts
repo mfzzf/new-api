@@ -54,10 +54,10 @@ export const mediaModelFormSchema = z.object({
 
 export const mediaProviderFormSchema = z.object({
   code: resourceKey,
-  name: z.string().trim().min(1, 'Provider name is required'),
+  name: z.string().trim().min(1, 'Provider account name is required'),
   adapter_type: z.enum(['mock', 'openai_images']),
   media_type: z.enum(['image', 'video', 'image_and_video']),
-  base_url: z.url('Enter a valid provider Base URL'),
+  base_url: z.url('Enter a valid provider account Base URL'),
   api_key: z.string().trim().max(8192, 'Use at most 8192 characters'),
   metadata_json: metadataJSON,
   enabled: z.boolean(),
@@ -66,7 +66,7 @@ export const mediaProviderFormSchema = z.object({
 export const routeNodeFormSchema = z
   .object({
     model_id: z.string().trim().min(1, 'Model is required'),
-    provider_id: z.string().trim().min(1, 'Provider is required'),
+    provider_id: z.string().trim().min(1, 'Provider account is required'),
     provider_model: z.string().trim().min(1, 'Provider model is required'),
     weight: z.number().int().min(0).max(10000),
     priority: z.number().int().min(0).max(10000),
