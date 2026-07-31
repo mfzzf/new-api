@@ -168,6 +168,22 @@ describe('media control form validation', () => {
       }).success,
       false
     )
+    for (const auth_header of [
+      'Host',
+      'CONTENT-LENGTH',
+      'Cookie',
+      'Proxy-Authorization',
+      'Transfer-Encoding',
+    ]) {
+      assert.equal(
+        mediaProviderFormSchema.safeParse({
+          ...validProvider,
+          auth_header,
+        }).success,
+        false,
+        auth_header
+      )
+    }
   })
 
   test('requires HTTPS for remote non-mock providers but permits loopback HTTP', () => {
@@ -200,6 +216,20 @@ describe('media control form validation', () => {
       }).success,
       false
     )
+    for (const base_url of [
+      'https://user:secret@api.example/v1',
+      'https://api.example/v1?api_key=secret',
+      'https://api.example/v1#fragment',
+    ]) {
+      assert.equal(
+        mediaProviderFormSchema.safeParse({
+          ...validProvider,
+          base_url,
+        }).success,
+        false,
+        base_url
+      )
+    }
   })
 
   test('preserves zero weight as a valid disabled-from-selection value', () => {

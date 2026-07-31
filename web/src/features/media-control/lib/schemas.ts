@@ -47,6 +47,22 @@ const jsonObjectString = (label: string) =>
 
 const metadataJSON = jsonObjectString('Metadata')
 const httpTokenPattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
+const forbiddenProviderAuthHeaders = new Set([
+  'connection',
+  'content-length',
+  'cookie',
+  'cookie2',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'proxy-connection',
+  'set-cookie',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+])
 
 const authHeader = z
   .string()
@@ -55,6 +71,13 @@ const authHeader = z
   .refine((value) => !value || httpTokenPattern.test(value), {
     message: 'Enter a valid HTTP header name',
   })
+  .refine(
+    (value) => !value || !forbiddenProviderAuthHeaders.has(value.toLowerCase()),
+    {
+      message:
+        'Do not use routing, cookie, proxy, or hop-by-hop headers for authentication',
+    }
+  )
 
 const authScheme = z
   .string()
@@ -146,6 +169,14 @@ export const mediaProviderFormSchema = z
         message: 'Use an absolute HTTP(S) URL',
       })
       return
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      context.addIssue({
+        code: 'custom',
+        path: ['base_url'],
+        message:
+          'Do not include user information, a query string, or a fragment',
+      })
     }
     const loopbackHosts = ['localhost', '127.0.0.1', '::1', '[::1]']
     if (
