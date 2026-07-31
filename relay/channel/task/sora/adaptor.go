@@ -140,6 +140,12 @@ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, erro
 func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error {
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
+	// Never forward a caller-supplied key. PublicTaskID is generated once before
+	// pre-consume and remains stable when this RelayInfo retries another channel.
+	req.Header.Del("Idempotency-Key")
+	if info != nil && info.TaskRelayInfo != nil && info.PublicTaskID != "" {
+		req.Header.Set("Idempotency-Key", info.PublicTaskID)
+	}
 	return nil
 }
 
