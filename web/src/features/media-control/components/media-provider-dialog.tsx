@@ -44,11 +44,17 @@ import {
   mediaControlQueryKeys,
   updateMediaProvider,
 } from '../api'
+import { MEDIA_PROVIDER_ADAPTER_LABELS } from '../lib/provider-display'
 import {
   mediaProviderFormSchema,
   type MediaProviderFormValues,
 } from '../lib/schemas'
-import type { MediaProvider, MediaProviderInput } from '../types'
+import {
+  MEDIA_PROVIDER_ADAPTER_TYPES,
+  type MediaProvider,
+  type MediaProviderAdapterType,
+  type MediaProviderInput,
+} from '../types'
 
 const formID = 'media-provider-form'
 const selectClassName =
@@ -74,6 +80,8 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
       adapter_type: 'mock',
       media_type: 'image_and_video',
       base_url: '',
+      auth_header: 'Authorization',
+      auth_scheme: 'Bearer',
       api_key: '',
       metadata_json: '{}',
       enabled: true,
@@ -105,6 +113,8 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             adapter_type: current.adapter_type ?? 'mock',
             media_type: current.media_type,
             base_url: current.base_url,
+            auth_header: current.auth_header,
+            auth_scheme: current.auth_scheme,
             api_key: '',
             metadata_json: JSON.stringify(current.metadata, null, 2),
             enabled: current.enabled,
@@ -115,12 +125,30 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             adapter_type: 'mock',
             media_type: 'image_and_video',
             base_url: '',
+            auth_header: 'Authorization',
+            auth_scheme: 'Bearer',
             api_key: '',
             metadata_json: '{}',
             enabled: true,
           }
     )
   }, [current, form, open])
+
+  const adapterType = form.watch('adapter_type')
+  const selectAdapter = (nextAdapterType: MediaProviderAdapterType) => {
+    form.setValue('adapter_type', nextAdapterType, { shouldValidate: true })
+    if (nextAdapterType === 'tencentcloud') {
+      form.setValue('auth_header', '', { shouldValidate: true })
+      form.setValue('auth_scheme', '', { shouldValidate: true })
+      return
+    }
+    if (!form.getValues('auth_header')) {
+      form.setValue('auth_header', 'Authorization', { shouldValidate: true })
+    }
+    if (!form.getValues('auth_scheme')) {
+      form.setValue('auth_scheme', 'Bearer', { shouldValidate: true })
+    }
+  }
 
   const submit = (values: MediaProviderFormValues) => {
     if ((!isEdit || !current?.has_api_key) && !values.api_key) {
@@ -136,6 +164,10 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
       adapter_type: values.adapter_type,
       media_type: values.media_type,
       base_url: values.base_url,
+      auth_header:
+        values.adapter_type === 'tencentcloud' ? '' : values.auth_header,
+      auth_scheme:
+        values.adapter_type === 'tencentcloud' ? '' : values.auth_scheme,
       api_key: values.api_key,
       metadata: JSON.parse(values.metadata_json) as Record<string, unknown>,
       enabled: values.enabled,
@@ -207,11 +239,20 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
               <FormItem>
                 <FormLabel>{t('Adapter type')}</FormLabel>
                 <FormControl>
-                  <select className={selectClassName} {...field}>
-                    <option value='mock'>{t('Mock')}</option>
-                    <option value='openai_images'>
-                      {t('OpenAI-compatible Images')}
-                    </option>
+                  <select
+                    className={selectClassName}
+                    {...field}
+                    onChange={(event) =>
+                      selectAdapter(
+                        event.target.value as MediaProviderAdapterType
+                      )
+                    }
+                  >
+                    {MEDIA_PROVIDER_ADAPTER_TYPES.map((adapter) => (
+                      <option key={adapter} value={adapter}>
+                        {t(MEDIA_PROVIDER_ADAPTER_LABELS[adapter])}
+                      </option>
+                    ))}
                   </select>
                 </FormControl>
                 <FormDescription>
@@ -260,6 +301,49 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
           />
           <FormField
             control={form.control}
+            name='auth_header'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Authentication header')}</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder='Authorization'
+                    readOnly={adapterType === 'tencentcloud'}
+                    aria-readonly={adapterType === 'tencentcloud'}
+                    className='read-only:opacity-60'
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='auth_scheme'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Authentication scheme')}</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder='Bearer'
+                    readOnly={adapterType === 'tencentcloud'}
+                    aria-readonly={adapterType === 'tencentcloud'}
+                    className='read-only:opacity-60'
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {adapterType === 'tencentcloud'
+                    ? t('Tencent Cloud uses Adapter-level request signing.')
+                    : t('Leave blank to send the API Key without a prefix.')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
             name='api_key'
             render={({ field }) => (
               <FormItem className='sm:col-span-2'>
@@ -268,7 +352,11 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
                   <Input
                     type='password'
                     autoComplete='new-password'
-                    placeholder='sk-...'
+                    placeholder={
+                      adapterType === 'tencentcloud'
+                        ? '{"secret_id":"...","secret_key":"..."}'
+                        : 'sk-...'
+                    }
                     {...field}
                   />
                 </FormControl>
@@ -284,6 +372,17 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
                         'The API Key is encrypted at rest and is never returned after saving.'
                       )}
                 </FormDescription>
+                {adapterType === 'tencentcloud' && (
+                  <FormDescription>
+                    {t('Use a write-only JSON credential object:')}{' '}
+                    <code className='break-all'>
+                      {
+                        '{"secret_id":"...","secret_key":"...","token":"","region":""}'
+                      }
+                    </code>{' '}
+                    {t('token and region are optional.')}
+                  </FormDescription>
+                )}
                 <FormMessage />
               </FormItem>
             )}

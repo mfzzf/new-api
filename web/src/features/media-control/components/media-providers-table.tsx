@@ -100,15 +100,22 @@ export function MediaProvidersTable(props: MediaProvidersTableProps) {
               </span>
             </TableCell>
             <TableCell>
-              {item.has_api_key ? (
-                <code className='bg-muted rounded px-2 py-1 text-xs'>
-                  {t('Configured')} · {item.api_key_hint || '••••'}
-                </code>
-              ) : (
-                <span className='text-muted-foreground text-xs'>
-                  {t('Not configured')}
-                </span>
-              )}
+              <div className='space-y-1'>
+                {item.has_api_key ? (
+                  <code className='bg-muted rounded px-2 py-1 text-xs'>
+                    {t('Configured')} · {item.api_key_hint || '••••'}
+                  </code>
+                ) : (
+                  <span className='text-muted-foreground text-xs'>
+                    {t('Not configured')}
+                  </span>
+                )}
+                <div className='text-muted-foreground font-mono text-xs'>
+                  {item.adapter_type === 'tencentcloud'
+                    ? t('Adapter request signing')
+                    : `${item.auth_header}: ${item.auth_scheme || t('Raw API Key')}`}
+                </div>
+              </div>
             </TableCell>
             <TableCell>
               <Badge

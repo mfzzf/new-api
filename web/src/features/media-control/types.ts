@@ -18,7 +18,28 @@ For commercial licensing, please contact support@quantumnous.com
 */
 export type MediaType = 'image' | 'video'
 export type ProviderMediaType = MediaType | 'image_and_video'
-export type MediaProviderAdapterType = 'mock' | 'openai_images'
+
+export const MEDIA_PROVIDER_ADAPTER_TYPES = [
+  'mock',
+  'openai',
+  'openai_images',
+  'gemini',
+  'kie',
+  'qianfan',
+  'tencentcloud',
+  'tuzi',
+] as const
+export type MediaProviderAdapterType =
+  (typeof MEDIA_PROVIDER_ADAPTER_TYPES)[number]
+
+export const MEDIA_HTTP_METHODS = [
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+] as const
+export type MediaHTTPMethod = (typeof MEDIA_HTTP_METHODS)[number]
 
 export type MediaModel = {
   id: string
@@ -45,6 +66,8 @@ export type MediaProvider = {
   adapter_type: MediaProviderAdapterType
   media_type: ProviderMediaType
   base_url: string
+  auth_header: string
+  auth_scheme: string
   has_api_key: boolean
   api_key_hint: string
   metadata: Record<string, unknown>
@@ -59,6 +82,8 @@ export type MediaProviderInput = {
   adapter_type: MediaProviderAdapterType
   media_type: ProviderMediaType
   base_url: string
+  auth_header: string
+  auth_scheme: string
   api_key: string
   metadata: Record<string, unknown>
   enabled: boolean
@@ -69,6 +94,16 @@ export type RouteNode = {
   model_id: string
   provider_id: string
   provider_model: string
+  submit_path: string
+  submit_method: MediaHTTPMethod
+  status_path: string
+  status_method: MediaHTTPMethod | ''
+  param_mapping: Record<string, unknown>
+  response_mapping: Record<string, unknown>
+  static_body: Record<string, unknown>
+  public_protocol: Record<string, unknown>
+  passthrough_enabled: boolean
+  request_timeout_ms: number
   weight: number
   priority: number
   rpm_limit: number

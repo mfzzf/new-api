@@ -42,6 +42,7 @@ import { MediaProviderDialog } from './components/media-provider-dialog'
 import { MediaProvidersTable } from './components/media-providers-table'
 import { RouteNodeDialog } from './components/route-node-dialog'
 import { RouteNodesTable } from './components/route-nodes-table'
+import { isProviderCompatibleWithModel } from './lib/provider-display'
 import type {
   MediaControlSection,
   MediaModel,
@@ -114,7 +115,7 @@ export function MediaControl() {
   const filteredProviders = useMemo(
     () =>
       providers.filter((item) =>
-        `${item.name} ${item.code} ${item.base_url}`
+        `${item.name} ${item.code} ${item.base_url} ${item.adapter_type} ${item.auth_header}`
           .toLowerCase()
           .includes(normalizedSearch)
       ),
@@ -132,7 +133,11 @@ export function MediaControl() {
         )
         return `${model?.display_name ?? ''} ${model?.key ?? ''} ${
           provider?.name ?? ''
-        } ${provider?.code ?? ''} ${item.provider_model}`
+        } ${provider?.code ?? ''} ${provider?.adapter_type ?? ''} ${
+          item.provider_model
+        } ${item.submit_method} ${item.submit_path} ${item.status_method} ${
+          item.status_path
+        }`
           .toLowerCase()
           .includes(normalizedSearch)
       }),
@@ -187,8 +192,11 @@ export function MediaControl() {
     routeNodesQuery.isPending
   const hasError =
     modelsQuery.isError || providersQuery.isError || routeNodesQuery.isError
+  const hasCompatibleRoutePair = models.some((model) =>
+    providers.some((provider) => isProviderCompatibleWithModel(provider, model))
+  )
   const routeCreateBlocked =
-    section === 'route-nodes' && (models.length === 0 || providers.length === 0)
+    section === 'route-nodes' && !hasCompatibleRoutePair
 
   return (
     <>
@@ -205,7 +213,9 @@ export function MediaControl() {
             disabled={routeCreateBlocked}
             title={
               routeCreateBlocked
-                ? t('Create at least one model and provider account first')
+                ? t(
+                    'Create a media-compatible model and provider account first'
+                  )
                 : undefined
             }
           >

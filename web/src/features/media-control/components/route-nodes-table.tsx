@@ -60,6 +60,7 @@ export function RouteNodesTable(props: RouteNodesTableProps) {
           <TableHead>{t('Provider account')}</TableHead>
           <TableHead>{t('Platform model')}</TableHead>
           <TableHead>{t('Provider model')}</TableHead>
+          <TableHead>{t('Upstream endpoint')}</TableHead>
           <TableHead>{t('TPM / RPM')}</TableHead>
           <TableHead>{t('Weight')}</TableHead>
           <TableHead>{t('Priority')}</TableHead>
@@ -94,6 +95,37 @@ export function RouteNodesTable(props: RouteNodesTableProps) {
               </TableCell>
               <TableCell className='font-mono text-xs'>
                 {item.provider_model}
+              </TableCell>
+              <TableCell>
+                <div className='flex min-w-56 items-center gap-2'>
+                  <Badge variant='outline'>{item.submit_method}</Badge>
+                  <code
+                    className='text-muted-foreground max-w-64 truncate text-xs'
+                    title={item.submit_path}
+                  >
+                    {item.submit_path}
+                  </code>
+                </div>
+                {item.status_path && (
+                  <div className='mt-1 flex items-center gap-2'>
+                    <Badge variant='secondary'>{item.status_method}</Badge>
+                    <code
+                      className='text-muted-foreground max-w-64 truncate text-xs'
+                      title={item.status_path}
+                    >
+                      {item.status_path}
+                    </code>
+                  </div>
+                )}
+                <div className='text-muted-foreground mt-1 text-xs'>
+                  {t('{{seconds}}s timeout', {
+                    seconds: item.request_timeout_ms / 1000,
+                  })}
+                  {' · '}
+                  {item.passthrough_enabled
+                    ? t('Passthrough enabled')
+                    : t('Mapped parameters only')}
+                </div>
               </TableCell>
               <TableCell className='text-muted-foreground'>
                 {item.tpm_limit || '—'} / {item.rpm_limit || '—'}

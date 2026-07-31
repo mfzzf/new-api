@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { formatProviderAccountOption } from '../provider-display'
+import {
+  formatProviderAccountOption,
+  isProviderCompatibleWithModel,
+} from '../provider-display'
 
 describe('formatProviderAccountOption', () => {
   test('distinguishes accounts that share a name and Adapter', () => {
@@ -37,5 +40,31 @@ describe('formatProviderAccountOption', () => {
     assert.equal(primary, 'OpenAI · openai-primary · OpenAI-compatible Images')
     assert.equal(backup, 'OpenAI · openai-backup · OpenAI-compatible Images')
     assert.notEqual(primary, backup)
+  })
+})
+
+describe('isProviderCompatibleWithModel', () => {
+  test('accepts matching and dual-media accounts while rejecting mismatches', () => {
+    assert.equal(
+      isProviderCompatibleWithModel(
+        { media_type: 'image' },
+        { media_type: 'image' }
+      ),
+      true
+    )
+    assert.equal(
+      isProviderCompatibleWithModel(
+        { media_type: 'image_and_video' },
+        { media_type: 'video' }
+      ),
+      true
+    )
+    assert.equal(
+      isProviderCompatibleWithModel(
+        { media_type: 'video' },
+        { media_type: 'image' }
+      ),
+      false
+    )
   })
 })

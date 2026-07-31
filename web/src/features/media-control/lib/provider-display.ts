@@ -16,14 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { MediaProvider, MediaProviderAdapterType } from '../types'
+import type {
+  MediaModel,
+  MediaProvider,
+  MediaProviderAdapterType,
+} from '../types'
 
 export const MEDIA_PROVIDER_ADAPTER_LABELS: Record<
   MediaProviderAdapterType,
   string
 > = {
   mock: 'Mock',
+  openai: 'OpenAI media protocol',
   openai_images: 'OpenAI-compatible Images',
+  gemini: 'Google Gemini media',
+  kie: 'KIE task protocol',
+  qianfan: 'Baidu Qianfan video',
+  tencentcloud: 'Tencent Cloud VOD AIGC',
+  tuzi: 'Tuzi multipart video',
 }
 
 type ProviderAccountOption = Pick<MediaProvider, 'code' | 'name'>
@@ -33,4 +43,14 @@ export function formatProviderAccountOption(
   adapterLabel: string
 ): string {
   return `${provider.name} · ${provider.code} · ${adapterLabel}`
+}
+
+export function isProviderCompatibleWithModel(
+  provider: Pick<MediaProvider, 'media_type'>,
+  model: Pick<MediaModel, 'media_type'>
+): boolean {
+  return (
+    provider.media_type === 'image_and_video' ||
+    provider.media_type === model.media_type
+  )
 }
