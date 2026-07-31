@@ -55,6 +55,7 @@ import {
   type MediaProviderAdapterType,
   type MediaProviderInput,
 } from '../types'
+import { FormHelpTooltip } from './form-help-tooltip'
 
 const formID = 'media-provider-form'
 const selectClassName =
@@ -237,7 +238,16 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name='adapter_type'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Adapter type')}</FormLabel>
+                <div className='flex items-center gap-1'>
+                  <FormLabel>{t('Adapter type')}</FormLabel>
+                  <FormHelpTooltip
+                    ariaLabel={`${t('Adapter type')}: ${t('Learn more')}`}
+                  >
+                    {t(
+                      'Adapter is a reusable protocol implementation. Multiple provider accounts can use the same Adapter.'
+                    )}
+                  </FormHelpTooltip>
+                </div>
                 <FormControl>
                   <select
                     className={selectClassName}
@@ -255,11 +265,6 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
                     ))}
                   </select>
                 </FormControl>
-                <FormDescription>
-                  {t(
-                    'Adapter is a reusable protocol implementation. Multiple provider accounts can use the same Adapter.'
-                  )}
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -323,7 +328,16 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
             name='auth_scheme'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Authentication scheme')}</FormLabel>
+                <div className='flex items-center gap-1'>
+                  <FormLabel>{t('Authentication scheme')}</FormLabel>
+                  <FormHelpTooltip
+                    ariaLabel={`${t('Authentication scheme')}: ${t('Learn more')}`}
+                  >
+                    {adapterType === 'tencentcloud'
+                      ? t('Tencent Cloud uses Adapter-level request signing.')
+                      : t('Leave blank to send the API Key without a prefix.')}
+                  </FormHelpTooltip>
+                </div>
                 <FormControl>
                   <Input
                     placeholder='Bearer'
@@ -333,11 +347,6 @@ export function MediaProviderDialog(props: MediaProviderDialogProps) {
                     {...field}
                   />
                 </FormControl>
-                <FormDescription>
-                  {adapterType === 'tencentcloud'
-                    ? t('Tencent Cloud uses Adapter-level request signing.')
-                    : t('Leave blank to send the API Key without a prefix.')}
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
