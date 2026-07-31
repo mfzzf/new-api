@@ -2,6 +2,8 @@ package channel
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -304,6 +306,25 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
+// applyInternalImageIdempotency binds one New API relay request to one
+// durable image Job. The caller-supplied Idempotency-Key is never forwarded:
+// New API owns user authentication and quota, while the media runtime only
+// receives this opaque, service-generated identity. This must run after header
+// overrides so neither client passthrough nor channel configuration can change
+// the Job identity.
+func applyInternalImageIdempotency(req *http.Request, info *common.RelayInfo) {
+	if req == nil || info == nil || info.RelayMode != constant.RelayModeImagesGenerations {
+		return
+	}
+	req.Header.Del("Idempotency-Key")
+	requestID := strings.TrimSpace(info.RequestId)
+	if requestID == "" {
+		return
+	}
+	digest := sha256.Sum256([]byte("dreamto:image-generation:" + requestID))
+	req.Header.Set("Idempotency-Key", "image_"+hex.EncodeToString(digest[:]))
+}
+
 func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
@@ -327,6 +348,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	applyInternalImageIdempotency(req, info)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)

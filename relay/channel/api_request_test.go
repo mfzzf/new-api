@@ -1,14 +1,69 @@
 package channel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestApplyInternalImageIdempotencyReplacesCallerAndConfiguredValues(t *testing.T) {
+	t.Parallel()
+
+	request := httptest.NewRequest(http.MethodPost, "https://runtime.example/v1/images/generations", nil)
+	request.Header.Set("Idempotency-Key", "caller-or-channel-controlled")
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeImagesGenerations,
+		RequestId: "server-generated-request-123",
+	}
+
+	applyInternalImageIdempotency(request, info)
+
+	digest := sha256.Sum256([]byte("dreamto:image-generation:" + info.RequestId))
+	want := "image_" + hex.EncodeToString(digest[:])
+	require.Equal(t, want, request.Header.Get("Idempotency-Key"))
+	require.NotContains(t, request.Header.Get("Idempotency-Key"), info.RequestId)
+}
+
+func TestApplyInternalImageIdempotencyIsStableAndScopedToGeneration(t *testing.T) {
+	t.Parallel()
+
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeImagesGenerations,
+		RequestId: "stable-request",
+	}
+	first := httptest.NewRequest(http.MethodPost, "https://runtime.example/v1/images/generations", nil)
+	second := httptest.NewRequest(http.MethodPost, "https://runtime.example/v1/images/generations", nil)
+	applyInternalImageIdempotency(first, info)
+	applyInternalImageIdempotency(second, info)
+	require.NotEmpty(t, first.Header.Get("Idempotency-Key"))
+	require.Equal(t, first.Header.Get("Idempotency-Key"), second.Header.Get("Idempotency-Key"))
+
+	edit := httptest.NewRequest(http.MethodPost, "https://runtime.example/v1/images/edits", nil)
+	edit.Header.Set("Idempotency-Key", "edit-value")
+	applyInternalImageIdempotency(edit, &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeImagesEdits,
+		RequestId: info.RequestId,
+	})
+	require.Equal(t, "edit-value", edit.Header.Get("Idempotency-Key"))
+}
+
+func TestApplyInternalImageIdempotencyFailsClosedWithoutRequestID(t *testing.T) {
+	t.Parallel()
+
+	request := httptest.NewRequest(http.MethodPost, "https://runtime.example/v1/images/generations", nil)
+	request.Header.Set("Idempotency-Key", "caller-controlled")
+	applyInternalImageIdempotency(request, &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeImagesGenerations,
+	})
+	require.Empty(t, request.Header.Get("Idempotency-Key"))
+}
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	t.Parallel()
