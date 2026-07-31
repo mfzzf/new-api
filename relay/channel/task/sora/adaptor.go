@@ -9,6 +9,7 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -56,6 +57,8 @@ type responseTask struct {
 		Code    string `json:"code"`
 	} `json:"error,omitempty"`
 }
+
+const maxSoraTaskResponseBytes = 1 << 20
 
 // ============================
 // Adaptor implementation
@@ -231,18 +234,22 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, req
 }
 
 // DoResponse handles upstream response, returns taskID etc.
-func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *dto.TaskError) {
-	responseBody, err := io.ReadAll(resp.Body)
+func (a *TaskAdaptor) DoResponse(_ *gin.Context, resp *http.Response, _ *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *dto.TaskError) {
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxSoraTaskResponseBytes+1))
 	if err != nil {
-		taskErr = service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+		taskErr = service.TaskErrorWrapper(errors.Wrap(err, "read upstream task response"), "read_response_body_failed", http.StatusInternalServerError)
 		return
 	}
-	_ = resp.Body.Close()
+	if len(responseBody) > maxSoraTaskResponseBytes {
+		taskErr = service.TaskErrorWrapper(errors.New("upstream task response exceeds size limit"), "invalid_response", http.StatusInternalServerError)
+		return
+	}
 
 	// Parse Sora response
 	var dResp responseTask
 	if err := common.Unmarshal(responseBody, &dResp); err != nil {
-		taskErr = service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_body_failed", http.StatusInternalServerError)
+		taskErr = service.TaskErrorWrapper(errors.Wrap(err, "invalid upstream task response"), "unmarshal_response_body_failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -255,11 +262,98 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return
 	}
 
-	// 使用公开 task_xxxx ID 返回给客户端
-	dResp.ID = info.PublicTaskID
-	dResp.TaskID = info.PublicTaskID
-	c.JSON(http.StatusOK, dResp)
 	return upstreamID, responseBody, nil
+}
+
+// BuildPendingTaskData creates the durable response stored before any upstream
+// request is sent. It is safe to return when submission outcome is uncertain.
+func (a *TaskAdaptor) BuildPendingTaskData(info *relaycommon.RelayInfo) ([]byte, error) {
+	publicID := ""
+	modelName := ""
+	if info != nil {
+		publicID = info.PublicTaskID
+		modelName = info.OriginModelName
+	}
+	return common.Marshal(responseTask{
+		ID:        publicID,
+		TaskID:    publicID,
+		Object:    "video",
+		Model:     modelName,
+		Status:    "queued",
+		Progress:  0,
+		CreatedAt: time.Now().Unix(),
+	})
+}
+
+// BuildPublicTaskData removes the upstream identifier before a successful
+// submit response is committed or exposed to the caller.
+func (a *TaskAdaptor) BuildPublicTaskData(info *relaycommon.RelayInfo, upstreamData []byte) ([]byte, error) {
+	var upstream responseTask
+	if err := common.Unmarshal(upstreamData, &upstream); err != nil {
+		return nil, err
+	}
+	if upstream.ID == "" && upstream.TaskID == "" {
+		return nil, fmt.Errorf("upstream task id is empty")
+	}
+	if info == nil || info.PublicTaskID == "" {
+		return nil, fmt.Errorf("public task id is empty")
+	}
+
+	modelName := info.OriginModelName
+	if modelName == "" {
+		modelName = upstream.Model
+	}
+	return buildPublicResponseTask(info.PublicTaskID, modelName, upstream)
+}
+
+// BuildPublicPollingTaskData stores only the stable OpenAI video projection.
+// Runtime job IDs are kept in Task.PrivateData and never copied into Task.Data,
+// which is returned to end users.
+func (a *TaskAdaptor) BuildPublicPollingTaskData(task *model.Task, upstreamData []byte) ([]byte, error) {
+	if task == nil || task.TaskID == "" {
+		return nil, fmt.Errorf("public task id is empty")
+	}
+	var upstream responseTask
+	if err := common.Unmarshal(upstreamData, &upstream); err != nil {
+		return nil, err
+	}
+	modelName := task.Properties.OriginModelName
+	if modelName == "" {
+		modelName = upstream.Model
+	}
+	return buildPublicResponseTask(task.TaskID, modelName, upstream)
+}
+
+func buildPublicResponseTask(publicID string, modelName string, upstream responseTask) ([]byte, error) {
+	status := upstream.Status
+	switch status {
+	case "queued", "pending", "processing", "in_progress", "completed", "failed", "cancelled":
+	default:
+		status = "queued"
+	}
+	createdAt := upstream.CreatedAt
+	if createdAt == 0 {
+		createdAt = time.Now().Unix()
+	}
+	progress := upstream.Progress
+	if progress < 0 || progress > 100 {
+		progress = 0
+	}
+
+	return common.Marshal(responseTask{
+		ID:          publicID,
+		TaskID:      publicID,
+		Object:      "video",
+		Model:       modelName,
+		Status:      status,
+		Progress:    progress,
+		CreatedAt:   createdAt,
+		CompletedAt: upstream.CompletedAt,
+		ExpiresAt:   upstream.ExpiresAt,
+		Seconds:     upstream.Seconds,
+		Size:        upstream.Size,
+		Error:       upstream.Error,
+	})
 }
 
 // FetchTask fetch task status
@@ -293,6 +387,10 @@ func (a *TaskAdaptor) GetChannelName() string {
 	return ChannelName
 }
 
+func (a *TaskAdaptor) MaxTaskPollingResponseBytes() int64 {
+	return maxSoraTaskResponseBytes
+}
+
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
 	resTask := responseTask{}
 	if err := common.Unmarshal(respBody, &resTask); err != nil {
@@ -300,7 +398,11 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 
 	taskResult := relaycommon.TaskInfo{
-		Code: 0,
+		Code:   0,
+		TaskID: resTask.ID,
+	}
+	if taskResult.TaskID == "" {
+		taskResult.TaskID = resTask.TaskID
 	}
 
 	switch resTask.Status {
@@ -332,6 +434,9 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(task *model.Task) ([]byte, error) {
 	var err error
 	if data, err = sjson.SetBytes(data, "id", task.TaskID); err != nil {
 		return nil, errors.Wrap(err, "set id failed")
+	}
+	if data, err = sjson.SetBytes(data, "task_id", task.TaskID); err != nil {
+		return nil, errors.Wrap(err, "set task_id failed")
 	}
 	return data, nil
 }

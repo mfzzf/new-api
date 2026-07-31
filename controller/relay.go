@@ -523,7 +523,9 @@ func RelayTask(c *gin.Context) {
 	var result *relay.TaskSubmitResult
 	var taskErr *dto.TaskError
 	defer func() {
-		if taskErr != nil && relayInfo.Billing != nil {
+		// Once the durable Task owns the reservation, every terminal/refund path
+		// is fenced by its quota marker; the request BillingSession must not refund.
+		if taskErr != nil && relayInfo.Billing != nil && (result == nil || !result.DurableQuotaOwned) {
 			relayInfo.Billing.Refund(c)
 		}
 	}()
@@ -581,6 +583,9 @@ func RelayTask(c *gin.Context) {
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
 		}
 
+		if result != nil && result.PersistenceFirst {
+			break
+		}
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
@@ -594,6 +599,10 @@ func RelayTask(c *gin.Context) {
 
 	// ── 成功：结算 + 日志 + 插入任务 ──
 	if taskErr == nil {
+		if result != nil && result.PersistenceFirst {
+			// Persistence-first adaptors already committed state and wrote 200/202.
+			return
+		}
 		if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
 			common.SysError("settle task billing error: " + settleErr.Error())
 		}

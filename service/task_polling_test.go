@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -27,6 +28,12 @@ type taskPollingFetchAdaptor struct {
 	blockStarted chan struct{}
 	releaseBlock chan struct{}
 	blockOnce    sync.Once
+}
+
+type durableVideoPollingAdaptor struct {
+	statusCode int
+	body       []byte
+	fetchedID  string
 }
 
 type sunoFailurePollingAdaptor struct {
@@ -117,6 +124,69 @@ func (a *taskPollingFetchAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *rela
 	return 0
 }
 
+func (a *durableVideoPollingAdaptor) Init(_ *relaycommon.RelayInfo) {}
+
+func (a *durableVideoPollingAdaptor) FetchTask(_ string, _ string, body map[string]any, _ string) (*http.Response, error) {
+	a.fetchedID, _ = body["task_id"].(string)
+	return &http.Response{
+		StatusCode: a.statusCode,
+		Body:       io.NopCloser(bytes.NewReader(a.body)),
+	}, nil
+}
+
+func (a *durableVideoPollingAdaptor) ParseTaskResult(body []byte) (*relaycommon.TaskInfo, error) {
+	var response struct {
+		ID       string `json:"id"`
+		TaskID   string `json:"task_id"`
+		Status   string `json:"status"`
+		Progress int    `json:"progress"`
+	}
+	if err := common.Unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	taskID := response.ID
+	if taskID == "" {
+		taskID = response.TaskID
+	}
+	result := &relaycommon.TaskInfo{TaskID: taskID}
+	switch response.Status {
+	case "queued":
+		result.Status = model.TaskStatusQueued
+	case "processing":
+		result.Status = model.TaskStatusInProgress
+	case "completed":
+		result.Status = model.TaskStatusSuccess
+	case "failed":
+		result.Status = model.TaskStatusFailure
+		result.Reason = "upstream task failed"
+	}
+	if response.Progress > 0 && response.Progress < 100 {
+		result.Progress = fmt.Sprintf("%d%%", response.Progress)
+	}
+	return result, nil
+}
+
+func (a *durableVideoPollingAdaptor) AdjustBillingOnComplete(_ *model.Task, _ *relaycommon.TaskInfo) int {
+	return 0
+}
+
+func (a *durableVideoPollingAdaptor) BuildPublicPollingTaskData(task *model.Task, body []byte) ([]byte, error) {
+	var response struct {
+		Status   string `json:"status"`
+		Progress int    `json:"progress"`
+	}
+	if err := common.Unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	return common.Marshal(map[string]any{
+		"id":       task.TaskID,
+		"task_id":  task.TaskID,
+		"model":    task.Properties.OriginModelName,
+		"status":   response.Status,
+		"progress": response.Progress,
+	})
+}
+
 func (a *taskPollingFetchAdaptor) fetchCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -159,6 +229,41 @@ func seedPollingTask(t *testing.T, channelID int, publicID string, upstreamID st
 		PrivateData: model.TaskPrivateData{
 			UpstreamTaskID: upstreamID,
 		},
+	}
+	require.NoError(t, model.DB.Create(task).Error)
+	return task
+}
+
+func seedSubmitUnknownVideoTask(t *testing.T, userID, channelID, quota, tokenID int, publicID string) *model.Task {
+	t.Helper()
+	submissionKey := publicID
+	task := &model.Task{
+		TaskID:           publicID,
+		SubmissionKey:    &submissionKey,
+		SubmitRecoveryAt: time.Now().Add(-time.Second).Unix(),
+		Platform:         constant.TaskPlatform("sora"),
+		UserId:           userID,
+		Group:            "default",
+		ChannelId:        channelID,
+		Quota:            quota,
+		Action:           constant.TaskActionGenerate,
+		Status:           model.TaskStatusSubmitUnknown,
+		Progress:         "0%",
+		SubmitTime:       model.TaskRefundLegacyCutoff,
+		CreatedAt:        time.Now().Unix(),
+		UpdatedAt:        time.Now().Unix(),
+		Properties: model.Properties{
+			OriginModelName: "dreamto-video",
+		},
+		PrivateData: model.TaskPrivateData{
+			BillingSource: BillingSourceWallet,
+			TokenId:       tokenID,
+		},
+		Data: []byte(fmt.Sprintf(
+			`{"id":%q,"task_id":%q,"model":"dreamto-video","status":"queued"}`,
+			publicID,
+			publicID,
+		)),
 	}
 	require.NoError(t, model.DB.Create(task).Error)
 	return task
@@ -274,10 +379,13 @@ func TestUpdateVideoTasksSlowChannelDoesNotBlockOtherChannels(t *testing.T) {
 	slowTask := seedPollingTask(t, slowChannelID, "task_public_slow", "upstream_slow_1")
 	fastFirst := seedPollingTask(t, fastChannelID, "task_public_fast_1", "upstream_fast_parallel_1")
 	fastSecond := seedPollingTask(t, fastChannelID, "task_public_fast_2", "upstream_fast_parallel_2")
+	slowUpstreamID := slowTask.GetUpstreamTaskID()
+	fastFirstUpstreamID := fastFirst.GetUpstreamTaskID()
+	fastSecondUpstreamID := fastSecond.GetUpstreamTaskID()
 
 	adaptor := &taskPollingFetchAdaptor{
 		fetched:      make(chan string, 4),
-		blockTaskID:  slowTask.GetUpstreamTaskID(),
+		blockTaskID:  slowUpstreamID,
 		blockStarted: make(chan struct{}),
 		releaseBlock: make(chan struct{}),
 	}
@@ -296,16 +404,16 @@ func TestUpdateVideoTasksSlowChannelDoesNotBlockOtherChannels(t *testing.T) {
 	gopool.Go(func() {
 		errCh <- UpdateVideoTasks(context.Background(), constant.TaskPlatform("kling"), map[int][]string{
 			slowChannelID: {
-				slowTask.GetUpstreamTaskID(),
+				slowUpstreamID,
 			},
 			fastChannelID: {
-				fastFirst.GetUpstreamTaskID(),
-				fastSecond.GetUpstreamTaskID(),
+				fastFirstUpstreamID,
+				fastSecondUpstreamID,
 			},
 		}, map[string]*model.Task{
-			slowTask.GetUpstreamTaskID():   slowTask,
-			fastFirst.GetUpstreamTaskID():  fastFirst,
-			fastSecond.GetUpstreamTaskID(): fastSecond,
+			slowUpstreamID:       slowTask,
+			fastFirstUpstreamID:  fastFirst,
+			fastSecondUpstreamID: fastSecond,
 		})
 	})
 
@@ -318,16 +426,16 @@ func TestUpdateVideoTasksSlowChannelDoesNotBlockOtherChannels(t *testing.T) {
 	require.Eventually(t, func() bool {
 		fetchedTaskIDs := adaptor.fetchedTaskIDs()
 		return len(fetchedTaskIDs) == 2 &&
-			fetchedTaskIDs[0] == fastFirst.GetUpstreamTaskID() &&
-			fetchedTaskIDs[1] == fastSecond.GetUpstreamTaskID()
+			fetchedTaskIDs[0] == fastFirstUpstreamID &&
+			fetchedTaskIDs[1] == fastSecondUpstreamID
 	}, 500*time.Millisecond, 10*time.Millisecond)
 
 	releaseBlockedTask()
 	require.NoError(t, <-errCh)
 	assert.ElementsMatch(t, []string{
-		slowTask.GetUpstreamTaskID(),
-		fastFirst.GetUpstreamTaskID(),
-		fastSecond.GetUpstreamTaskID(),
+		slowUpstreamID,
+		fastFirstUpstreamID,
+		fastSecondUpstreamID,
 	}, adaptor.fetchedTaskIDs())
 }
 
@@ -494,5 +602,166 @@ func TestSweepUnrefundedFailedTasksRestoresMarkerAfterFundingFailure(t *testing.
 	require.NoError(t, model.DB.First(&afterSuccessfulRetry, task.ID).Error)
 	assert.Zero(t, afterSuccessfulRetry.Quota)
 	assert.Equal(t, subscriptionUsed-int64(taskQuota), getSubscriptionUsed(t, subscriptionID))
+	assert.Equal(t, int64(1), countLogs(t))
+}
+
+func TestSubmitUnknownPollingRecoversPrivateIDAndStoresOnlyPublicData(t *testing.T) {
+	truncate(t)
+
+	const publicID = "task_public_recovery"
+	task := seedSubmitUnknownVideoTask(t, 501, 501, 0, 0, publicID)
+	baseURL := "http://media-runtime:3200"
+	channel := &model.Channel{
+		Id:      501,
+		Type:    constant.ChannelTypeSora,
+		Key:     "runtime-service-key",
+		BaseURL: &baseURL,
+	}
+	adaptor := &durableVideoPollingAdaptor{
+		statusCode: http.StatusOK,
+		body: []byte(`{
+			"id":"job_runtime_private",
+			"task_id":"job_runtime_private",
+			"provider_task_id":"provider_private",
+			"request_id":"trace_private",
+			"status":"processing",
+			"progress":37
+		}`),
+	}
+
+	require.NoError(t, updateVideoSingleTask(
+		context.Background(),
+		adaptor,
+		channel,
+		publicID,
+		map[string]*model.Task{publicID: task},
+	))
+	assert.Equal(t, publicID, adaptor.fetchedID)
+
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusInProgress, reloaded.Status)
+	assert.Equal(t, "37%", reloaded.Progress)
+	assert.Equal(t, "job_runtime_private", reloaded.PrivateData.UpstreamTaskID)
+	assert.Zero(t, reloaded.SubmitRecoveryAt)
+	assert.NotContains(t, string(reloaded.Data), "job_runtime_private")
+	assert.NotContains(t, string(reloaded.Data), "provider_private")
+	assert.NotContains(t, string(reloaded.Data), "trace_private")
+
+	var publicData map[string]any
+	require.NoError(t, common.Unmarshal(reloaded.Data, &publicData))
+	assert.Equal(t, publicID, publicData["id"])
+	assert.Equal(t, publicID, publicData["task_id"])
+	assert.Equal(t, "dreamto-video", publicData["model"])
+}
+
+func TestSubmitUnknownPollingKeepsReservationOnRetryableResponses(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{
+			name:       "unauthorized response",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"error":{"message":"invalid service token","code":"invalid_api_key"}}`,
+		},
+		{
+			name:       "runtime server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"temporarily unavailable","code":"video_runtime_internal_error"}}`,
+		},
+		{
+			name:       "malformed success response",
+			statusCode: http.StatusOK,
+			body:       `{`,
+		},
+		{
+			name:       "empty success response",
+			statusCode: http.StatusOK,
+			body:       `{}`,
+		},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			truncate(t)
+			publicID := fmt.Sprintf("task_retryable_%d", index)
+			task := seedSubmitUnknownVideoTask(t, 510+index, 0, 1500, 0, publicID)
+			originalData := append([]byte(nil), task.Data...)
+			originalRecoveryAt := task.SubmitRecoveryAt
+			baseURL := "http://media-runtime:3200"
+			adaptor := &durableVideoPollingAdaptor{
+				statusCode: test.statusCode,
+				body:       []byte(test.body),
+			}
+
+			err := updateVideoSingleTask(
+				context.Background(),
+				adaptor,
+				&model.Channel{Type: constant.ChannelTypeSora, Key: "runtime-service-key", BaseURL: &baseURL},
+				publicID,
+				map[string]*model.Task{publicID: task},
+			)
+			require.Error(t, err)
+
+			var reloaded model.Task
+			require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+			assert.EqualValues(t, model.TaskStatusSubmitUnknown, reloaded.Status)
+			assert.Equal(t, 1500, reloaded.Quota)
+			assert.Equal(t, originalRecoveryAt, reloaded.SubmitRecoveryAt)
+			assert.JSONEq(t, string(originalData), string(reloaded.Data))
+			assert.Empty(t, reloaded.PrivateData.UpstreamTaskID)
+			assert.Equal(t, int64(0), countLogs(t))
+		})
+	}
+}
+
+func TestSubmitUnknownPollingAuthoritativeNotFoundRefundsExactlyOnce(t *testing.T) {
+	truncate(t)
+
+	const userID, tokenID, taskQuota = 520, 520, 2500
+	const postConsumeUserQuota, postConsumeTokenQuota = 7500, 3500
+	const publicID = "task_authoritative_not_found"
+	seedUser(t, userID, postConsumeUserQuota)
+	seedToken(t, tokenID, userID, "sk-video-not-found", postConsumeTokenQuota)
+	task := seedSubmitUnknownVideoTask(t, userID, 0, taskQuota, tokenID, publicID)
+	baseURL := "http://media-runtime:3200"
+	adaptor := &durableVideoPollingAdaptor{
+		statusCode: http.StatusNotFound,
+		body:       []byte(`{"error":{"message":"job was not found","type":"invalid_request_error","code":"job_not_found"}}`),
+	}
+
+	require.NoError(t, updateVideoSingleTask(
+		context.Background(),
+		adaptor,
+		&model.Channel{Type: constant.ChannelTypeSora, Key: "runtime-service-key", BaseURL: &baseURL},
+		publicID,
+		map[string]*model.Task{publicID: task},
+	))
+
+	var reloaded model.Task
+	require.NoError(t, model.DB.First(&reloaded, task.ID).Error)
+	assert.EqualValues(t, model.TaskStatusFailure, reloaded.Status)
+	assert.Equal(t, "100%", reloaded.Progress)
+	assert.Zero(t, reloaded.Quota)
+	assert.Zero(t, reloaded.SubmitRecoveryAt)
+	assert.NotContains(t, string(reloaded.Data), "job was not found")
+	var publicData map[string]any
+	require.NoError(t, common.Unmarshal(reloaded.Data, &publicData))
+	assert.Equal(t, publicID, publicData["id"])
+	assert.Equal(t, publicID, publicData["task_id"])
+	assert.Equal(t, "failed", publicData["status"])
+	errorData, ok := publicData["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "task_not_found", errorData["code"])
+	assert.Equal(t, postConsumeUserQuota+taskQuota, getUserQuota(t, userID))
+	assert.Equal(t, postConsumeTokenQuota+taskQuota, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, int64(1), countLogs(t))
+
+	stale := *task
+	stale.Quota = taskQuota
+	assert.True(t, ClaimAndRefundTaskQuota(context.Background(), &stale, "duplicate reconciliation"))
+	assert.Equal(t, postConsumeUserQuota+taskQuota, getUserQuota(t, userID))
 	assert.Equal(t, int64(1), countLogs(t))
 }

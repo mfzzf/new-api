@@ -68,17 +68,8 @@ func VideoProxy(c *gin.Context) {
 
 	var videoURL string
 	proxy := channel.GetSetting().Proxy
+	channelManagedTarget := false
 	client := service.GetSSRFProtectedHTTPClient()
-	if proxy != "" {
-		// 渠道代理路径的连接由代理侧建立，无法做拨号时逐 IP 校验，
-		// 因此后面对 videoURL 保留请求前的一次性 SSRF 校验。
-		client, err = service.GetHttpClientWithProxy(proxy)
-		if err != nil {
-			logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to create proxy client for task %s: %s", taskID, err.Error()))
-			videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to create proxy client")
-			return
-		}
-	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
@@ -112,8 +103,23 @@ func VideoProxy(c *gin.Context) {
 			return
 		}
 	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
-		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
+		upstreamTaskID := strings.TrimSpace(task.GetUpstreamTaskID())
+		if upstreamTaskID == "" {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Missing upstream task ID for task %s", taskID))
+			videoProxyError(c, http.StatusBadGateway, "server_error", "Failed to fetch video content")
+			return
+		}
+		videoURL = fmt.Sprintf(
+			"%s/v1/videos/%s/content",
+			strings.TrimRight(baseURL, "/"),
+			url.PathEscape(upstreamTaskID),
+		)
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
+		// The target host comes exclusively from the operator-managed channel
+		// base URL. It may legitimately be a private Docker/private-link
+		// address, while redirects still pass through the relay client's
+		// SSRF-aware CheckRedirect hook.
+		channelManagedTarget = true
 	default:
 		// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)
 		videoURL = task.GetResultURL()
@@ -134,17 +140,30 @@ func VideoProxy(c *gin.Context) {
 		return
 	}
 
-	var validateErr error
-	if proxy == "" {
-		validateErr = service.ValidateSSRFProtectedFetchURL(videoURL)
-	} else {
-		fetchSetting := system_setting.GetFetchSetting()
-		validateErr = common.ValidateURLWithFetchSetting(videoURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
+	if channelManagedTarget || proxy != "" {
+		client, err = service.GetHttpClientWithProxy(proxy)
+		if err != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to create channel client for task %s: %s", taskID, err.Error()))
+			videoProxyError(c, http.StatusInternalServerError, "server_error", "Failed to create proxy client")
+			return
+		}
 	}
-	if validateErr != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Video URL blocked for task %s: %v", taskID, validateErr))
-		videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", validateErr))
-		return
+
+	if !channelManagedTarget {
+		var validateErr error
+		if proxy == "" {
+			validateErr = service.ValidateSSRFProtectedFetchURL(videoURL)
+		} else {
+			// A proxy establishes the destination connection, so only a
+			// request-time validation is possible for arbitrary result URLs.
+			fetchSetting := system_setting.GetFetchSetting()
+			validateErr = common.ValidateURLWithFetchSetting(videoURL, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain)
+		}
+		if validateErr != nil {
+			logger.LogError(c.Request.Context(), fmt.Sprintf("Video URL blocked for task %s: %v", taskID, validateErr))
+			videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", validateErr))
+			return
+		}
 	}
 
 	req.URL, err = url.Parse(videoURL)

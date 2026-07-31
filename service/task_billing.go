@@ -97,23 +97,24 @@ func taskAdjustFunding(task *model.Task, delta int) error {
 	return model.IncreaseUserQuota(task.UserId, -delta, false)
 }
 
-// taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
-// 需要通过 resolveTokenKey 运行时获取 key（不从 PrivateData 中读取）。
-func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
+func taskAdjustTokenQuotaChecked(ctx context.Context, task *model.Task, delta int) error {
 	if task.PrivateData.TokenId <= 0 || delta == 0 {
-		return
+		return nil
 	}
 	tokenKey := resolveTokenKey(ctx, task.PrivateData.TokenId, task.TaskID)
 	if tokenKey == "" {
-		return
+		return fmt.Errorf("token key is unavailable")
 	}
-	var err error
 	if delta > 0 {
-		err = model.DecreaseTokenQuota(task.PrivateData.TokenId, tokenKey, delta)
-	} else {
-		err = model.IncreaseTokenQuota(task.PrivateData.TokenId, tokenKey, -delta)
+		return model.DecreaseTokenQuota(task.PrivateData.TokenId, tokenKey, delta)
 	}
-	if err != nil {
+	return model.IncreaseTokenQuota(task.PrivateData.TokenId, tokenKey, -delta)
+}
+
+// taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
+// 需要通过 resolveTokenKey 运行时获取 key（不从 PrivateData 中读取）。
+func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
+	if err := taskAdjustTokenQuotaChecked(ctx, task, delta); err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("调整令牌额度失败 (delta=%d, task=%s): %s", delta, task.TaskID, err.Error()))
 	}
 }
@@ -175,8 +176,28 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 		return false
 	}
 
-	// 2. 退还令牌额度
-	taskAdjustTokenQuota(ctx, task, -quota)
+	// 2. 退还令牌额度。资金来源和令牌必须作为一组成功；否则先撤销
+	// 资金退款，再保留 quota marker 供对账重试，避免只退钱包却永久漏退
+	// Token，或下一轮再次给钱包入账。
+	if err := taskAdjustTokenQuotaChecked(ctx, task, -quota); err != nil {
+		if rollbackErr := taskAdjustFunding(task, quota); rollbackErr != nil {
+			logger.LogError(ctx, fmt.Sprintf(
+				"退还令牌额度失败且资金退款无法回滚，需人工对账 task %s: token=%s funding=%s",
+				task.TaskID,
+				err.Error(),
+				rollbackErr.Error(),
+			))
+			// The funding side may already be refunded. Clear the marker rather
+			// than risk crediting it again on the next reconciliation pass.
+			task.Quota = 0
+			if updateErr := task.UpdateQuota(); updateErr != nil {
+				logger.LogError(ctx, fmt.Sprintf("人工对账任务清除 quota marker 失败 task %s: %s", task.TaskID, updateErr.Error()))
+			}
+			return true
+		}
+		logger.LogWarn(ctx, fmt.Sprintf("退还令牌额度失败，已回滚资金退款 task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
 
 	// 3. 记录日志
 	other := taskBillingOther(task)
@@ -201,6 +222,42 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 		logger.LogError(ctx, fmt.Sprintf("退款成功但清除 task quota 失败 task %s: %s", task.TaskID, err.Error()))
 	}
 	return true
+}
+
+// ClaimAndRefundTaskQuota atomically claims a task's non-zero quota marker
+// before performing the observable refund. This prevents an immediate terminal
+// handler and the reconciliation sweep from both refunding the same task. If
+// the funding adjustment fails, the marker is restored for a later retry.
+func ClaimAndRefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
+	if task == nil || task.Quota == 0 {
+		return true
+	}
+
+	quota := task.Quota
+	claimed, err := model.ClaimQuotaForRefund(task.ID, quota)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("claim task quota for refund failed task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
+	if !claimed {
+		logger.LogDebug(ctx, "task %s quota refund already claimed", task.TaskID)
+		return true
+	}
+
+	if RefundTaskQuota(ctx, task, reason) {
+		return true
+	}
+
+	// RefundTaskQuota leaves the in-memory quota unchanged when the funding
+	// adjustment fails, so restore the durable marker for reconciliation.
+	task.Quota = quota
+	restored, restoreErr := model.RestoreQuotaAfterFailedRefund(task.ID, quota)
+	if restoreErr != nil {
+		logger.LogError(ctx, fmt.Sprintf("restore task quota after failed refund task %s: %s", task.TaskID, restoreErr.Error()))
+	} else if !restored {
+		logger.LogError(ctx, fmt.Sprintf("task %s refund failed and quota marker could not be restored", task.TaskID))
+	}
+	return false
 }
 
 // RecalculateTaskQuota 通用的异步差额结算。
@@ -272,6 +329,88 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		Other:     other,
 		NodeName:  task.PrivateData.NodeName,
 	})
+}
+
+// RecalculateTaskQuotaWhileStatus adjusts funding and quota only while the task
+// still owns expectedStatus. It is used before a persistence-first submission
+// becomes visible as SUBMITTED. A lost quota CAS compensates both token and
+// funding changes so a concurrent terminal worker remains the sole owner.
+func RecalculateTaskQuotaWhileStatus(
+	ctx context.Context,
+	task *model.Task,
+	actualQuota int,
+	expectedStatus model.TaskStatus,
+	reason string,
+	clamps ...*common.QuotaClamp,
+) bool {
+	if task == nil || actualQuota <= 0 {
+		return false
+	}
+	preConsumedQuota := task.Quota
+	quotaDelta := actualQuota - preConsumedQuota
+	if quotaDelta == 0 {
+		return true
+	}
+
+	if err := taskAdjustFunding(task, quotaDelta); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("提交差额结算资金调整失败 task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
+	if err := taskAdjustTokenQuotaChecked(ctx, task, quotaDelta); err != nil {
+		if rollbackErr := taskAdjustFunding(task, -quotaDelta); rollbackErr != nil {
+			logger.LogError(ctx, fmt.Sprintf("提交差额结算令牌失败且资金回滚失败 task %s: %s", task.TaskID, rollbackErr.Error()))
+		}
+		logger.LogError(ctx, fmt.Sprintf("提交差额结算令牌调整失败 task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
+
+	won, err := task.UpdateQuotaWithStatus(expectedStatus, preConsumedQuota, actualQuota)
+	if err != nil || !won {
+		if rollbackErr := taskAdjustTokenQuotaChecked(ctx, task, -quotaDelta); rollbackErr != nil {
+			logger.LogError(ctx, fmt.Sprintf("提交差额结算 CAS 失败且令牌回滚失败 task %s: %s", task.TaskID, rollbackErr.Error()))
+		}
+		if rollbackErr := taskAdjustFunding(task, -quotaDelta); rollbackErr != nil {
+			logger.LogError(ctx, fmt.Sprintf("提交差额结算 CAS 失败且资金回滚失败 task %s: %s", task.TaskID, rollbackErr.Error()))
+		}
+		if err != nil {
+			logger.LogError(ctx, fmt.Sprintf("提交差额结算 quota CAS 失败 task %s: %s", task.TaskID, err.Error()))
+		} else {
+			logger.LogWarn(ctx, fmt.Sprintf("提交差额结算 quota CAS 丢失 task %s", task.TaskID))
+		}
+		return false
+	}
+
+	var logType int
+	var logQuota int
+	if quotaDelta > 0 {
+		logType = model.LogTypeConsume
+		logQuota = quotaDelta
+		model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quotaDelta)
+		model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
+	} else {
+		logType = model.LogTypeRefund
+		logQuota = -quotaDelta
+	}
+	other := taskBillingOther(task)
+	other["task_id"] = task.TaskID
+	other["pre_consumed_quota"] = preConsumedQuota
+	other["actual_quota"] = actualQuota
+	for _, clamp := range clamps {
+		attachQuotaSaturationToOther(other, clamp)
+	}
+	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+		UserId:    task.UserId,
+		LogType:   logType,
+		Content:   reason,
+		ChannelId: task.ChannelId,
+		ModelName: taskModelName(task),
+		Quota:     logQuota,
+		TokenId:   task.PrivateData.TokenId,
+		Group:     task.Group,
+		Other:     other,
+		NodeName:  task.PrivateData.NodeName,
+	})
+	return true
 }
 
 // RecalculateTaskQuotaByTokens 根据实际 token 消耗重新计费（异步差额结算）。

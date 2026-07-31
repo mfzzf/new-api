@@ -23,10 +23,14 @@ import (
 )
 
 type TaskSubmitResult struct {
-	UpstreamTaskID string
-	TaskData       []byte
-	Platform       constant.TaskPlatform
-	Quota          int
+	UpstreamTaskID    string
+	TaskData          []byte
+	Platform          constant.TaskPlatform
+	Quota             int
+	DurableTask       *model.Task
+	PersistenceFirst  bool
+	DurableQuotaOwned bool
+	SubmissionUnknown bool
 	//PerCallPrice   types.PriceData
 }
 
@@ -141,7 +145,9 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 // 刷新渠道元数据 → 确定 platform/adaptor → 验证请求 →
 // 估算计费(EstimateBilling) → 计算价格 → 预扣费（仅首次）→
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
-// 控制器负责 defer Refund 和成功后 Settle。
+// 普通 adaptor 仍由控制器负责 defer Refund 和成功后 Settle；实现
+// PersistenceFirstTaskAdaptor 的媒体路径会在出网前持久化 Task，并把后续
+// 退款/结算所有权转移给该 Task。
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
 	info.InitChannelMeta(c)
 
@@ -216,17 +222,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
 	}
 
-	// 9. 发送请求
-	resp, err := adaptor.DoRequest(c, info, requestBody)
-	if err != nil {
-		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
-	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(resp.Body)
-		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
+	var persistenceFirst *persistenceFirstSubmission
+	var durableResult *TaskSubmitResult
+	if durableAdaptor, ok := adaptor.(channel.PersistenceFirstTaskAdaptor); ok {
+		var taskErr *dto.TaskError
+		persistenceFirst, durableResult, taskErr = beginPersistenceFirstSubmission(c, info, platform, durableAdaptor)
+		if taskErr != nil {
+			return durableResult, taskErr
+		}
 	}
 
-	// 10. 返回 OtherRatios 给下游（header 必须在 DoResponse 写 body 之前设置）
+	// Response metadata must be available for both a normal success and a
+	// persistence-first 202 whose submit outcome will be recovered later.
 	otherRatios := info.PriceData.OtherRatios()
 	if otherRatios == nil {
 		otherRatios = map[string]float64{}
@@ -234,13 +241,58 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	ratiosJSON, _ := common.Marshal(otherRatios)
 	c.Header("X-New-Api-Other-Ratios", string(ratiosJSON))
 
+	// 9. 发送请求
+	resp, err := adaptor.DoRequest(c, info, requestBody)
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if persistenceFirst != nil {
+			writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "upstream transport result is unknown")
+			return durableResult, nil
+		}
+		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	if resp == nil {
+		err = errors.New("upstream returned a nil response")
+		if persistenceFirst != nil {
+			writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "upstream response is unavailable")
+			return durableResult, nil
+		}
+		return nil, service.TaskErrorWrapper(err, "empty_upstream_response", http.StatusInternalServerError)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if persistenceFirst != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, persistenceFirstErrorBodyReadLimit))
+			_ = resp.Body.Close()
+			statusErr := fmt.Errorf("upstream task submission returned status %d", resp.StatusCode)
+			if persistenceFirstStatusIsUncertain(resp.StatusCode) {
+				writePersistenceFirstAccepted(c, durableResult, persistenceFirst, fmt.Sprintf("upstream status %d is inconclusive", resp.StatusCode))
+				return durableResult, nil
+			}
+			if !failPersistenceFirstSubmission(c, persistenceFirst, statusErr.Error()) {
+				writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "explicit rejection could not be committed")
+				return durableResult, nil
+			}
+			return durableResult, service.TaskErrorWrapper(statusErr, "fail_to_fetch_task", resp.StatusCode)
+		}
+		responseBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		responseErr := fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(responseBody))
+		return nil, service.TaskErrorWrapper(responseErr, "fail_to_fetch_task", resp.StatusCode)
+	}
+
 	// 11. 解析响应
 	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
 	if taskErr != nil {
+		if persistenceFirst != nil {
+			writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "upstream response validation failed")
+			return durableResult, nil
+		}
 		return nil, taskErr
 	}
 
-	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
+	// 12. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
 	finalQuota := info.PriceData.Quota
 	if adjustedRatios := adaptor.AdjustBillingOnSubmit(info, taskData); len(adjustedRatios) > 0 {
 		if adjustedQuota, ok := recalcQuotaFromRatios(info, adjustedRatios); ok {
@@ -249,6 +301,32 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			info.PriceData.ReplaceOtherRatios(adjustedRatios)
 			info.PriceData.Quota = finalQuota
 		}
+	}
+	if info.PriceData.FreeModel {
+		finalQuota = 0
+	}
+
+	if persistenceFirst != nil {
+		publicData, publicErr := buildPersistenceFirstPublicData(persistenceFirst, info, taskData)
+		if publicErr != nil {
+			writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "public response construction failed")
+			return durableResult, nil
+		}
+		if !adjustPersistenceFirstQuota(c, persistenceFirst, finalQuota, info.QuotaClamp) {
+			writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "submit quota adjustment remains recoverable")
+			return durableResult, nil
+		}
+		won, persistErr := finishPersistenceFirstSubmission(persistenceFirst, upstreamTaskID, publicData)
+		if persistErr != nil || !won {
+			writePersistenceFirstAccepted(c, durableResult, persistenceFirst, "durable submit completion remains recoverable")
+			return durableResult, nil
+		}
+
+		durableResult.UpstreamTaskID = upstreamTaskID
+		durableResult.TaskData = publicData
+		durableResult.Quota = persistenceFirst.task.Quota
+		c.Data(http.StatusOK, "application/json; charset=utf-8", publicData)
+		return durableResult, nil
 	}
 
 	return &TaskSubmitResult{

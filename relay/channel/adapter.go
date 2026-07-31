@@ -78,6 +78,21 @@ type TaskAdaptor interface {
 	ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error)
 }
 
+// PersistenceFirstTaskAdaptor opts an asynchronous adaptor into the durable
+// submission protocol. The relay persists a Task and its quota ownership
+// before sending the upstream request, then writes the public response only
+// after the upstream identifier and response data have been committed.
+//
+// BuildPendingTaskData must return a safe, user-facing representation that
+// contains no upstream task identifier or credential. BuildPublicTaskData
+// receives the raw successful upstream submit response and must replace public
+// identifier fields with RelayInfo.PublicTaskID before the data is persisted or
+// returned to the caller.
+type PersistenceFirstTaskAdaptor interface {
+	BuildPendingTaskData(info *relaycommon.RelayInfo) ([]byte, error)
+	BuildPublicTaskData(info *relaycommon.RelayInfo, upstreamData []byte) ([]byte, error)
+}
+
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }

@@ -11,6 +11,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -223,4 +225,128 @@ func TestFetchTaskDoesNotSendSubmitIdempotencyKey(t *testing.T) {
 	assert.Equal(t, "/v1/videos/upstream-task-123", request.path)
 	assert.Equal(t, "Bearer runtime-service-key", request.header.Get("Authorization"))
 	assert.Empty(t, request.header.Get("Idempotency-Key"))
+}
+
+func TestPersistenceFirstTaskDataDefersResponseAndHidesUpstreamID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{}`))
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "dreamto-video",
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{
+			PublicTaskID: "task_public_123",
+		},
+	}
+	adaptor := &TaskAdaptor{}
+	var persistenceAdaptor channel.PersistenceFirstTaskAdaptor = adaptor
+
+	pendingData, err := persistenceAdaptor.BuildPendingTaskData(info)
+	require.NoError(t, err)
+	var pending responseTask
+	require.NoError(t, common.Unmarshal(pendingData, &pending))
+	assert.Equal(t, "task_public_123", pending.ID)
+	assert.Equal(t, "task_public_123", pending.TaskID)
+	assert.Equal(t, "queued", pending.Status)
+	assert.Equal(t, "dreamto-video", pending.Model)
+
+	upstreamBody := `{"id":"runtime_job_secret","task_id":"runtime_job_secret","provider_task_id":"runtime_job_secret","status":"queued","object":"video","model":"provider-video","request_id":"trace-safe"}`
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+	upstreamID, rawData, taskErr := adaptor.DoResponse(context, response, info)
+	require.Nil(t, taskErr)
+	assert.Equal(t, "runtime_job_secret", upstreamID)
+	assert.Empty(t, recorder.Body.Bytes(), "DoResponse must not write before the durable CAS")
+
+	publicData, err := persistenceAdaptor.BuildPublicTaskData(info, rawData)
+	require.NoError(t, err)
+	assert.NotContains(t, string(publicData), "runtime_job_secret")
+	var public responseTask
+	require.NoError(t, common.Unmarshal(publicData, &public))
+	assert.Equal(t, "task_public_123", public.ID)
+	assert.Equal(t, "task_public_123", public.TaskID)
+	assert.Equal(t, "dreamto-video", public.Model)
+	var publicFields map[string]any
+	require.NoError(t, common.Unmarshal(publicData, &publicFields))
+	assert.NotContains(t, publicFields, "request_id")
+	assert.NotContains(t, publicFields, "provider_task_id")
+}
+
+func TestBuildPublicTaskDataRequiresStablePublicID(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	_, err := adaptor.BuildPublicTaskData(
+		&relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{}},
+		[]byte(`{"id":"upstream"}`),
+	)
+	require.Error(t, err)
+}
+
+func TestBuildPublicTaskDataRejectsNullResponse(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	_, err := adaptor.BuildPublicTaskData(
+		&relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"}},
+		[]byte(`null`),
+	)
+	require.Error(t, err)
+}
+
+func TestParseAndSanitizePollingResponseKeepsPrivateIDOutOfPublicData(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	upstreamData := []byte(`{
+		"id":"job_runtime_private",
+		"task_id":"job_runtime_private",
+		"provider_task_id":"provider_private",
+		"request_id":"trace_private",
+		"object":"video",
+		"model":"provider-video",
+		"status":"processing",
+		"progress":37,
+		"created_at":1700000000,
+		"seconds":"8",
+		"size":"1280x720"
+	}`)
+
+	result, err := adaptor.ParseTaskResult(upstreamData)
+	require.NoError(t, err)
+	assert.Equal(t, "job_runtime_private", result.TaskID)
+	assert.Equal(t, string(model.TaskStatusInProgress), result.Status)
+	assert.Equal(t, "37%", result.Progress)
+
+	task := &model.Task{
+		TaskID: "task_public_polling",
+		Properties: model.Properties{
+			OriginModelName: "dreamto-video",
+		},
+	}
+	publicData, err := adaptor.BuildPublicPollingTaskData(task, upstreamData)
+	require.NoError(t, err)
+	assert.NotContains(t, string(publicData), "job_runtime_private")
+	assert.NotContains(t, string(publicData), "provider_private")
+	assert.NotContains(t, string(publicData), "trace_private")
+
+	var public responseTask
+	require.NoError(t, common.Unmarshal(publicData, &public))
+	assert.Equal(t, "task_public_polling", public.ID)
+	assert.Equal(t, "task_public_polling", public.TaskID)
+	assert.Equal(t, "dreamto-video", public.Model)
+	assert.Equal(t, "processing", public.Status)
+	assert.Equal(t, 37, public.Progress)
+}
+
+func TestConvertToOpenAIVideoReplacesBothIdentifierFields(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	data, err := adaptor.ConvertToOpenAIVideo(&model.Task{
+		TaskID: "task_public_response",
+		Data:   []byte(`{"id":"job_private","task_id":"job_private","status":"queued"}`),
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "job_private")
+
+	var response responseTask
+	require.NoError(t, common.Unmarshal(data, &response))
+	assert.Equal(t, "task_public_response", response.ID)
+	assert.Equal(t, "task_public_response", response.TaskID)
 }

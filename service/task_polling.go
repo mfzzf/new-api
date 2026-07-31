@@ -33,6 +33,19 @@ type TaskPollingAdaptor interface {
 	AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int
 }
 
+// TaskPollingDataSanitizer is implemented by adaptors whose upstream polling
+// response contains private identifiers or fields that must not be persisted
+// into the user-visible Task.Data document.
+type TaskPollingDataSanitizer interface {
+	BuildPublicPollingTaskData(task *model.Task, upstreamData []byte) ([]byte, error)
+}
+
+// TaskPollingResponseLimiter lets a protocol choose a stricter bound than the
+// compatibility ceiling used by legacy adaptors that may return Base64 media.
+type TaskPollingResponseLimiter interface {
+	MaxTaskPollingResponseBytes() int64
+}
+
 // GetTaskAdaptorFunc 由 main 包注入，用于获取指定平台的任务适配器。
 // 打破 service -> relay -> relay/channel -> service 的循环依赖。
 var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
@@ -40,6 +53,7 @@ var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
 const (
 	refundReconciliationLimit       = 100
 	refundReconciliationGracePeriod = 30 * time.Second
+	maxVideoTaskPollingResponse     = 128 << 20
 )
 
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
@@ -86,7 +100,7 @@ func sweepTimedOutTasks(ctx context.Context) {
 		}
 		timedOutCount++
 		if !isLegacy && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, reason)
+			ClaimAndRefundTaskQuota(ctx, task, reason)
 		}
 	}
 
@@ -345,7 +359,7 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		} else if !won {
 			logger.LogWarn(ctx, fmt.Sprintf("Task %s CAS lost or no-op update, skip billing", task.TaskID))
 		} else if isFailure && prevStatus != model.TaskStatusFailure && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, task.FailReason)
+			ClaimAndRefundTaskQuota(ctx, task, task.FailReason)
 		}
 	}
 	return nil
@@ -507,57 +521,88 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if err != nil {
 		return fmt.Errorf("fetchTask failed for task %s: %w", taskId, err)
 	}
+	if resp == nil || resp.Body == nil {
+		return fmt.Errorf("fetchTask returned an empty response for task %s", taskId)
+	}
 	defer resp.Body.Close()
-	responseBody, err := io.ReadAll(resp.Body)
+	maxResponseBytes := int64(maxVideoTaskPollingResponse)
+	if limiter, ok := adaptor.(TaskPollingResponseLimiter); ok {
+		if protocolLimit := limiter.MaxTaskPollingResponseBytes(); protocolLimit > 0 && protocolLimit < maxResponseBytes {
+			maxResponseBytes = protocolLimit
+		}
+	}
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("readAll failed for task %s: %w", taskId, err)
 	}
+	if int64(len(responseBody)) > maxResponseBytes {
+		return fmt.Errorf("polling response exceeds size limit for task %s", taskId)
+	}
 
-	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
+	logger.LogDebug(ctx, "updateVideoSingleTask response status=%d bytes=%d", resp.StatusCode, len(responseBody))
 
 	snap := task.Snapshot()
 
 	taskResult := &relaycommon.TaskInfo{}
-	// try parse as New API response format
-	var responseItems dto.TaskResponse[model.Task]
-	if err = common.Unmarshal(responseBody, &responseItems); err == nil && responseItems.IsSuccess() {
-		logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format: %+v", responseItems)
-		t := responseItems.Data
-		taskResult.TaskID = t.TaskID
-		taskResult.Status = string(t.Status)
-		taskResult.Url = t.GetResultURL()
-		taskResult.Progress = t.Progress
-		taskResult.Reason = t.FailReason
-		task.Data = t.Data
-	} else if taskResult, err = adaptor.ParseTaskResult(responseBody); err != nil {
-		return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, err)
+	authoritativeFailure := false
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if reason, authoritative := authoritativeTaskNotFound(resp.StatusCode, responseBody); authoritative {
+			taskResult = relaycommon.FailTaskInfo(reason)
+			authoritativeFailure = true
+		} else {
+			return fmt.Errorf("poll task %s returned retryable status %d", taskId, resp.StatusCode)
+		}
+	} else {
+		// Try the native New API response format before delegating to the
+		// provider-specific parser.
+		var responseItems dto.TaskResponse[model.Task]
+		if err = common.Unmarshal(responseBody, &responseItems); err == nil && responseItems.IsSuccess() {
+			logger.LogDebug(ctx, "updateVideoSingleTask parsed as new api response format")
+			t := responseItems.Data
+			taskResult.TaskID = t.TaskID
+			taskResult.Status = string(t.Status)
+			taskResult.Url = t.GetResultURL()
+			taskResult.Progress = t.Progress
+			taskResult.Reason = t.FailReason
+		} else {
+			taskResult, err = adaptor.ParseTaskResult(responseBody)
+			if err != nil {
+				return fmt.Errorf("parseTaskResult failed for task %s: %w", taskId, err)
+			}
+			if taskResult == nil {
+				return fmt.Errorf("parseTaskResult returned no result for task %s", taskId)
+			}
+		}
 	}
-
-	task.Data = redactVideoResponseBody(responseBody)
 
 	logger.LogDebug(ctx, "updateVideoSingleTask taskResult: %+v", taskResult)
 
 	now := time.Now().Unix()
 	if taskResult.Status == "" {
-		//taskResult = relaycommon.FailTaskInfo("upstream returned empty status")
-		errorResult := &dto.GeneralErrorResponse{}
-		if err = common.Unmarshal(responseBody, &errorResult); err == nil {
-			openaiError := errorResult.TryToOpenAIError()
-			if openaiError != nil {
-				// 返回规范的 OpenAI 错误格式，提取错误信息，判断错误是否为任务失败
-				if openaiError.Code == "429" {
-					// 429 错误通常表示请求过多或速率限制，暂时不认为是任务失败，保持原状态等待下一轮轮询
-					return nil
-				}
+		return fmt.Errorf("upstream returned empty task status for task %s", taskId)
+	}
 
-				// 其他错误认为是任务失败，记录错误信息并更新任务状态
-				taskResult = relaycommon.FailTaskInfo("upstream returned error")
-			} else {
-				// unknown error format, log original response
-				logger.LogError(ctx, fmt.Sprintf("Task %s returned empty status with unrecognized error format, response: %s", taskId, string(responseBody)))
-				taskResult = relaycommon.FailTaskInfo("upstream returned unrecognized message")
+	publicData := redactVideoResponseBody(responseBody)
+	if authoritativeFailure {
+		publicData, err = buildPublicTaskFailureData(task, taskResult.Reason)
+		if err != nil {
+			return fmt.Errorf("build public failure response for task %s: %w", taskId, err)
+		}
+	} else {
+		if sanitizer, ok := adaptor.(TaskPollingDataSanitizer); ok {
+			publicData, err = sanitizer.BuildPublicPollingTaskData(task, responseBody)
+			if err != nil {
+				return fmt.Errorf("sanitize polling response for task %s: %w", taskId, err)
 			}
 		}
+	}
+	task.Data = publicData
+
+	if snap.Status == model.TaskStatusSubmitUnknown {
+		if taskResult.TaskID != "" && taskResult.TaskID != task.TaskID {
+			task.PrivateData.UpstreamTaskID = taskResult.TaskID
+		}
+		task.SubmitRecoveryAt = 0
 	}
 
 	shouldRefund := false
@@ -636,10 +681,60 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
 	}
 	if shouldRefund {
-		RefundTaskQuota(ctx, task, task.FailReason)
+		ClaimAndRefundTaskQuota(ctx, task, task.FailReason)
 	}
 
 	return nil
+}
+
+func authoritativeTaskNotFound(statusCode int, body []byte) (string, bool) {
+	if statusCode != http.StatusNotFound {
+		return "", false
+	}
+	var errorResult dto.GeneralErrorResponse
+	if err := common.Unmarshal(body, &errorResult); err != nil {
+		return "", false
+	}
+	openAIError := errorResult.TryToOpenAIError()
+	if openAIError == nil {
+		return "", false
+	}
+	code := strings.ToLower(strings.TrimSpace(fmt.Sprint(openAIError.Code)))
+	switch code {
+	case "job_not_found", "video_not_found", "not_found":
+		return "upstream task was not found", true
+	default:
+		return "", false
+	}
+}
+
+func buildPublicTaskFailureData(task *model.Task, reason string) ([]byte, error) {
+	publicData := map[string]any{
+		"id":       task.TaskID,
+		"task_id":  task.TaskID,
+		"object":   "video",
+		"model":    task.Properties.OriginModelName,
+		"status":   "failed",
+		"progress": 100,
+		"error": map[string]any{
+			"message": reason,
+			"code":    "task_not_found",
+		},
+	}
+	var previous map[string]any
+	if err := common.Unmarshal(task.Data, &previous); err == nil {
+		for _, field := range []string{"created_at", "seconds", "size", "expires_at"} {
+			if value, ok := previous[field]; ok {
+				publicData[field] = value
+			}
+		}
+		if publicData["model"] == "" {
+			if modelName, ok := previous["model"].(string); ok {
+				publicData["model"] = modelName
+			}
+		}
+	}
+	return common.Marshal(publicData)
 }
 
 func redactVideoResponseBody(body []byte) []byte {

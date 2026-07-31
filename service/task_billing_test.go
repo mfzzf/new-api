@@ -332,6 +332,57 @@ func TestRefundTaskQuota_Wallet(t *testing.T) {
 	assert.Zero(t, getTaskQuota(t, task.ID))
 }
 
+func TestClaimAndRefundTaskQuotaPreventsDoubleRefund(t *testing.T) {
+	truncate(t)
+	ctx := context.Background()
+
+	const userID, tokenID, channelID = 101, 101, 101
+	const initQuota, preConsumed, tokenRemain = 10000, 2500, 4000
+	seedUser(t, userID, initQuota)
+	seedToken(t, tokenID, userID, "sk-claim-refund", tokenRemain)
+	seedChannel(t, channelID)
+
+	task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
+	staleContender := *task
+
+	assert.True(t, ClaimAndRefundTaskQuota(ctx, task, "explicit provider rejection"))
+	assert.True(t, ClaimAndRefundTaskQuota(ctx, &staleContender, "reconciliation retry"))
+
+	assert.Equal(t, initQuota+preConsumed, getUserQuota(t, userID))
+	assert.Equal(t, tokenRemain+preConsumed, getTokenRemainQuota(t, tokenID))
+	assert.Zero(t, getTaskQuota(t, task.ID))
+	assert.Equal(t, int64(1), countLogs(t))
+}
+
+func TestClaimAndRefundTaskQuotaRestoresMarkerAfterFundingFailure(t *testing.T) {
+	truncate(t)
+	task := makeTask(102, 0, 1700, 0, BillingSourceSubscription, 9999)
+	require.NoError(t, model.DB.Create(task).Error)
+
+	assert.False(t, ClaimAndRefundTaskQuota(context.Background(), task, "missing subscription"))
+	assert.Equal(t, 1700, task.Quota)
+	assert.Equal(t, 1700, getTaskQuota(t, task.ID))
+	assert.Equal(t, int64(0), countLogs(t))
+}
+
+func TestClaimAndRefundTaskQuotaCompensatesFundingWhenTokenRefundFails(t *testing.T) {
+	truncate(t)
+
+	const userID, missingTokenID, taskQuota = 103, 9999, 1800
+	const initialUserQuota = 8200
+	seedUser(t, userID, initialUserQuota)
+
+	task := makeTask(userID, 0, taskQuota, missingTokenID, BillingSourceWallet, 0)
+	require.NoError(t, model.DB.Create(task).Error)
+
+	assert.False(t, ClaimAndRefundTaskQuota(context.Background(), task, "token row unavailable"))
+	assert.Equal(t, initialUserQuota, getUserQuota(t, userID))
+	assert.Equal(t, taskQuota, task.Quota)
+	assert.Equal(t, taskQuota, getTaskQuota(t, task.ID))
+	assert.Equal(t, int64(0), countLogs(t))
+}
+
 func TestRefundTaskQuota_Subscription(t *testing.T) {
 	truncate(t)
 	ctx := context.Background()

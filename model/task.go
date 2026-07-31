@@ -17,7 +17,7 @@ type TaskStatus string
 func (t TaskStatus) ToVideoStatus() string {
 	var status string
 	switch t {
-	case TaskStatusQueued, TaskStatusSubmitted:
+	case TaskStatusSubmitting, TaskStatusSubmitUnknown, TaskStatusQueued, TaskStatusSubmitted:
 		status = dto.VideoStatusQueued
 	case TaskStatusInProgress:
 		status = dto.VideoStatusInProgress
@@ -32,13 +32,15 @@ func (t TaskStatus) ToVideoStatus() string {
 }
 
 const (
-	TaskStatusNotStart   TaskStatus = "NOT_START"
-	TaskStatusSubmitted             = "SUBMITTED"
-	TaskStatusQueued                = "QUEUED"
-	TaskStatusInProgress            = "IN_PROGRESS"
-	TaskStatusFailure               = "FAILURE"
-	TaskStatusSuccess               = "SUCCESS"
-	TaskStatusUnknown               = "UNKNOWN"
+	TaskStatusNotStart      TaskStatus = "NOT_START"
+	TaskStatusSubmitting               = "SUBMITTING"
+	TaskStatusSubmitUnknown            = "SUBMIT_UNKNOWN"
+	TaskStatusSubmitted                = "SUBMITTED"
+	TaskStatusQueued                   = "QUEUED"
+	TaskStatusInProgress               = "IN_PROGRESS"
+	TaskStatusFailure                  = "FAILURE"
+	TaskStatusSuccess                  = "SUCCESS"
+	TaskStatusUnknown                  = "UNKNOWN"
 )
 
 // TaskRefundLegacyCutoff separates legacy timeout tasks that intentionally
@@ -46,24 +48,28 @@ const (
 const TaskRefundLegacyCutoff int64 = 1740182400 // 2025-02-22 00:00:00 UTC
 
 type Task struct {
-	ID         int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
-	CreatedAt  int64                 `json:"created_at" gorm:"index"`
-	UpdatedAt  int64                 `json:"updated_at"`
-	TaskID     string                `json:"task_id" gorm:"type:varchar(191);index"` // 第三方id，不一定有/ song id\ Task id
-	Platform   constant.TaskPlatform `json:"platform" gorm:"type:varchar(30);index"` // 平台
-	UserId     int                   `json:"user_id" gorm:"index"`
-	Group      string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
-	ChannelId  int                   `json:"channel_id" gorm:"index"`
-	Quota      int                   `json:"quota"`
-	Action     string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
-	Status     TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
-	FailReason string                `json:"fail_reason"`
-	SubmitTime int64                 `json:"submit_time" gorm:"index"`
-	StartTime  int64                 `json:"start_time" gorm:"index"`
-	FinishTime int64                 `json:"finish_time" gorm:"index"`
-	Progress   string                `json:"progress" gorm:"type:varchar(20);index"`
-	Properties Properties            `json:"properties" gorm:"type:json"`
-	Username   string                `json:"username,omitempty" gorm:"-"`
+	ID        int64  `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
+	CreatedAt int64  `json:"created_at" gorm:"index"`
+	UpdatedAt int64  `json:"updated_at"`
+	TaskID    string `json:"task_id" gorm:"type:varchar(191);index"` // 第三方id，不一定有/ song id\ Task id
+	// SubmissionKey is nullable so legacy tasks remain forward-compatible.
+	// Durable media submissions use its unique index as an insertion fence.
+	SubmissionKey    *string               `json:"-" gorm:"type:varchar(191);uniqueIndex:idx_tasks_submission_key"`
+	SubmitRecoveryAt int64                 `json:"-" gorm:"index"`
+	Platform         constant.TaskPlatform `json:"platform" gorm:"type:varchar(30);index"` // 平台
+	UserId           int                   `json:"user_id" gorm:"index"`
+	Group            string                `json:"group" gorm:"type:varchar(50)"` // 修正计费用
+	ChannelId        int                   `json:"channel_id" gorm:"index"`
+	Quota            int                   `json:"quota"`
+	Action           string                `json:"action" gorm:"type:varchar(40);index"` // 任务类型, song, lyrics, description-mode
+	Status           TaskStatus            `json:"status" gorm:"type:varchar(20);index"` // 任务状态
+	FailReason       string                `json:"fail_reason"`
+	SubmitTime       int64                 `json:"submit_time" gorm:"index"`
+	StartTime        int64                 `json:"start_time" gorm:"index"`
+	FinishTime       int64                 `json:"finish_time" gorm:"index"`
+	Progress         string                `json:"progress" gorm:"type:varchar(20);index"`
+	Properties       Properties            `json:"properties" gorm:"type:json"`
+	Username         string                `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
@@ -334,7 +340,14 @@ func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Where("status != ?", TaskStatusFailure).Where("status != ?", TaskStatusSuccess).Limit(limit).Order("id").Find(&tasks).Error
+	err = DB.Where("progress != ?", "100%").
+		Where("status != ?", TaskStatusFailure).
+		Where("status != ?", TaskStatusSuccess).
+		Where("status != ?", TaskStatusSubmitting).
+		Where("(status != ? OR submit_recovery_at <= ?)", TaskStatusSubmitUnknown, time.Now().Unix()).
+		Limit(limit).
+		Order("id").
+		Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
@@ -401,6 +414,19 @@ func GetByTaskId(userId int, taskId string) (*Task, bool, error) {
 		return nil, false, err
 	}
 	return task, exist, err
+}
+
+func GetBySubmissionKey(submissionKey string) (*Task, bool, error) {
+	if submissionKey == "" {
+		return nil, false, nil
+	}
+	var task *Task
+	err := DB.Where("submission_key = ?", submissionKey).First(&task).Error
+	exist, err := RecordExist(err)
+	if err != nil {
+		return nil, false, err
+	}
+	return task, exist, nil
 }
 
 func GetByTaskIds(userId int, taskIds []any) ([]*Task, error) {
@@ -513,6 +539,40 @@ func (t *Task) UpdateWithStatus(fromStatus TaskStatus) (bool, error) {
 		return false, result.Error
 	}
 	return result.RowsAffected > 0, nil
+}
+
+// UpdateWithStatusAndQuota performs a full task CAS guarded by both lifecycle
+// state and quota ownership. Persistence-first submission uses it so a stale
+// writer cannot resurrect quota after a worker has claimed a refund.
+func (t *Task) UpdateWithStatusAndQuota(fromStatus TaskStatus, fromQuota int) (bool, error) {
+	result := DB.Model(t).
+		Where("status = ? AND quota = ?", fromStatus, fromQuota).
+		Select("*").
+		Updates(t)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+// UpdateQuotaWithStatus changes only the quota marker while the task still has
+// the expected ownership state. The caller must complete or compensate the
+// corresponding external funding adjustment when this CAS loses.
+func (t *Task) UpdateQuotaWithStatus(fromStatus TaskStatus, fromQuota, toQuota int) (bool, error) {
+	result := DB.Model(&Task{}).
+		Where("id = ? AND status = ? AND quota = ?", t.ID, fromStatus, fromQuota).
+		Updates(map[string]any{
+			"quota":      toQuota,
+			"updated_at": time.Now().Unix(),
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected > 0 {
+		t.Quota = toQuota
+		return true, nil
+	}
+	return false, nil
 }
 
 // TaskBulkUpdate performs an unconditional bulk UPDATE by upstream task_id strings.
