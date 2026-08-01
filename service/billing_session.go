@@ -122,6 +122,46 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	})
 }
 
+// RefundSync is reserved for persistence hand-off failures where the caller
+// cannot return until the in-memory reservation has been rolled back. Normal
+// relay failures continue to use Refund's asynchronous path.
+func (s *BillingSession) RefundSync(c *gin.Context) error {
+	s.mu.Lock()
+	if s.settled || s.refunded || !s.needsRefundLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	s.refunded = true
+	tokenId := s.relayInfo.TokenId
+	tokenKey := s.relayInfo.TokenKey
+	isPlayground := s.relayInfo.IsPlayground
+	tokenConsumed := s.tokenConsumed
+	extraReserved := s.extraReserved
+	subscriptionId := s.relayInfo.SubscriptionId
+	funding := s.funding
+	s.mu.Unlock()
+
+	logger.LogInfo(c, fmt.Sprintf("用户 %d 同步返还预扣费（token_quota=%s, funding=%s）",
+		s.relayInfo.UserId,
+		logger.FormatQuota(tokenConsumed),
+		funding.Source(),
+	))
+	if err := funding.Refund(); err != nil {
+		return err
+	}
+	if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
+		if err := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); err != nil {
+			return err
+		}
+	}
+	if tokenConsumed > 0 && !isPlayground {
+		if err := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NeedsRefund 返回是否存在需要退还的预扣状态。
 func (s *BillingSession) NeedsRefund() bool {
 	s.mu.Lock()

@@ -65,6 +65,14 @@ func SetApiRouter(router *gin.Engine) {
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UniversalVerify)
 
+		mediaBillingRoute := apiRouter.Group("/media/billing")
+		mediaBillingRoute.Use(middleware.MediaBillingServiceAuth())
+		{
+			mediaBillingRoute.POST("/reservations", middleware.TokenAuth(), controller.ReserveMediaBilling)
+			mediaBillingRoute.POST("/reservations/:id/settle", controller.SettleMediaBilling)
+			mediaBillingRoute.POST("/reservations/:id/refund", controller.RefundMediaBilling)
+		}
+
 		userRoute := apiRouter.Group("/user")
 		{
 			userRoute.POST("/auth/refresh", middleware.SessionCookieOriginGuard(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.RefreshAuth)
