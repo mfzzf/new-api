@@ -35,6 +35,16 @@ type MediaBillingReservation struct {
 	ModelPrice           float64 `json:"model_price"`
 	ModelRatio           float64 `json:"model_ratio"`
 	GroupRatio           float64 `json:"group_ratio"`
+	PricingKey           string  `json:"pricing_key" gorm:"type:varchar(512)"`
+	PricingVersion       int     `json:"pricing_version" gorm:"not null;default:0"`
+	PricingUnit          string  `json:"pricing_unit" gorm:"type:varchar(20)"`
+	PricingQuantity      int     `json:"pricing_quantity" gorm:"not null;default:0"`
+	PricingUnitPrice     string  `json:"pricing_unit_price" gorm:"type:varchar(64)"`
+	PricingCurrency      string  `json:"pricing_currency" gorm:"type:varchar(8)"`
+	PricingAmount        string  `json:"pricing_amount" gorm:"type:varchar(64)"`
+	PricingExchangeRate  string  `json:"pricing_exchange_rate" gorm:"type:varchar(64)"`
+	PricingAmountUSD     string  `json:"pricing_amount_usd" gorm:"type:varchar(64)"`
+	BillingDimensions    string  `json:"billing_dimensions" gorm:"type:text"`
 	Status               string  `json:"status" gorm:"type:varchar(20);index;not null"`
 	FailureReason        string  `json:"failure_reason" gorm:"type:text"`
 	CreatedAt            int64   `json:"created_at" gorm:"index;not null"`

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -14,11 +15,14 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/mediapricing"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayhelper "github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -27,14 +31,29 @@ const (
 )
 
 type mediaBillingReserveRequest struct {
-	IdempotencyKey     string `json:"idempotency_key"`
-	RequestFingerprint string `json:"request_fingerprint"`
-	MediaType          string `json:"media_type"`
-	Model              string `json:"model"`
-	N                  int    `json:"n"`
-	Size               string `json:"size"`
-	Quality            string `json:"quality"`
-	DurationSeconds    int    `json:"duration_seconds"`
+	IdempotencyKey     string            `json:"idempotency_key"`
+	RequestFingerprint string            `json:"request_fingerprint"`
+	MediaType          string            `json:"media_type"`
+	Model              string            `json:"model"`
+	N                  int               `json:"n"`
+	Size               string            `json:"size"`
+	Quality            string            `json:"quality"`
+	DurationSeconds    int               `json:"duration_seconds"`
+	Input              map[string]string `json:"input,omitempty"`
+	Parameters         map[string]string `json:"parameters,omitempty"`
+}
+
+type mediaBillingPricingSnapshot struct {
+	Key          string
+	Version      int
+	Unit         string
+	Quantity     int
+	UnitPrice    string
+	Currency     string
+	Amount       string
+	ExchangeRate string
+	AmountUSD    string
+	Dimensions   string
 }
 
 type mediaBillingRefundRequest struct {
@@ -85,8 +104,8 @@ func ReserveMediaBilling(c *gin.Context) {
 	if request.N == 0 {
 		request.N = 1
 	}
-	if request.N != 1 {
-		writeMediaBillingError(c, http.StatusBadRequest, "invalid_media_count", "n must be 1")
+	if request.N < 1 || request.N > 10 || request.MediaType == "video" && request.N != 1 {
+		writeMediaBillingError(c, http.StatusBadRequest, "invalid_media_count", "n must be between 1 and 10 for images and 1 for videos")
 		return
 	}
 	if len(request.Size) > 40 || len(request.Quality) > 40 {
@@ -105,6 +124,10 @@ func ReserveMediaBilling(c *gin.Context) {
 			"invalid_video_duration",
 			fmt.Sprintf("duration_seconds must be between 1 and %d", relaycommon.MaxTaskDurationSeconds),
 		)
+		return
+	}
+	if err := normalizeMediaBillingDimensions(&request); err != nil {
+		writeMediaBillingError(c, http.StatusBadRequest, "invalid_media_dimensions", err.Error())
 		return
 	}
 	if !middleware.ValidateTokenModelAccess(c, request.Model) {
@@ -139,25 +162,7 @@ func ReserveMediaBilling(c *gin.Context) {
 	}
 	relayInfo := relaycommon.GenRelayInfoImage(c, imageRequest)
 	relayInfo.ForcePreConsume = true
-	var priceData types.PriceData
-	var err error
-	if request.MediaType == "image" {
-		priceData, err = relayhelper.ModelPriceHelper(c, relayInfo, 0, imageRequest.GetTokenCountMeta())
-	} else {
-		priceData, err = relayhelper.ModelPriceHelperPerCall(c, relayInfo)
-		if err == nil {
-			priceData.AddOtherRatio("seconds", float64(request.DurationSeconds))
-			sizeRatio := 1.0
-			if request.Size == "1792x1024" || request.Size == "1024x1792" {
-				sizeRatio = 1.666667
-			}
-			priceData.AddOtherRatio("size", sizeRatio)
-			priceData.Quota, err = common.QuotaFromFloatStrict(
-				priceData.ApplyOtherRatiosToFloat(float64(priceData.Quota)),
-			)
-			priceData.QuotaToPreConsume = priceData.Quota
-		}
-	}
+	priceData, pricingSnapshot, err := resolveMediaBillingPrice(c, relayInfo, request, imageRequest)
 	if err != nil {
 		writeMediaBillingError(c, http.StatusBadRequest, "media_model_price_error", err.Error())
 		return
@@ -196,6 +201,18 @@ func ReserveMediaBilling(c *gin.Context) {
 		Status:               model.MediaBillingStatusReserving,
 		CreatedAt:            now,
 		UpdatedAt:            now,
+	}
+	if pricingSnapshot != nil {
+		reservation.PricingKey = pricingSnapshot.Key
+		reservation.PricingVersion = pricingSnapshot.Version
+		reservation.PricingUnit = pricingSnapshot.Unit
+		reservation.PricingQuantity = pricingSnapshot.Quantity
+		reservation.PricingUnitPrice = pricingSnapshot.UnitPrice
+		reservation.PricingCurrency = pricingSnapshot.Currency
+		reservation.PricingAmount = pricingSnapshot.Amount
+		reservation.PricingExchangeRate = pricingSnapshot.ExchangeRate
+		reservation.PricingAmountUSD = pricingSnapshot.AmountUSD
+		reservation.BillingDimensions = pricingSnapshot.Dimensions
 	}
 	if err := model.InsertMediaBillingReservation(reservation); err != nil {
 		if replayed, handled := replayMediaBillingReservation(c, tokenID, keyHashString, request.RequestFingerprint); handled {
@@ -243,6 +260,178 @@ func ReserveMediaBilling(c *gin.Context) {
 	}
 	service.RecordMediaBillingConsumption(c, reservation)
 	writeMediaBillingReservation(c, reservation)
+}
+
+func normalizeMediaBillingDimensions(request *mediaBillingReserveRequest) error {
+	if request == nil {
+		return errors.New("media billing dimensions are unavailable")
+	}
+	input, err := normalizeMediaBillingDimensionMap("input", request.Input)
+	if err != nil {
+		return err
+	}
+	parameters, err := normalizeMediaBillingDimensionMap("parameters", request.Parameters)
+	if err != nil {
+		return err
+	}
+	if parameters == nil {
+		parameters = map[string]string{}
+	}
+	if request.Size != "" {
+		if parameters["size"] == "" {
+			parameters["size"] = request.Size
+		}
+		if parameters["resolution"] == "" {
+			parameters["resolution"] = request.Size
+		}
+	}
+	if request.Quality != "" && parameters["quality"] == "" {
+		parameters["quality"] = request.Quality
+	}
+	parameters["image_count"] = fmt.Sprintf("%d", request.N)
+	if request.MediaType == mediapricing.MediaTypeVideo {
+		seconds := fmt.Sprintf("%d", request.DurationSeconds)
+		if parameters["seconds"] == "" {
+			parameters["seconds"] = seconds
+		}
+		if parameters["duration"] == "" {
+			parameters["duration"] = seconds
+		}
+		if parameters["duration_seconds"] == "" {
+			parameters["duration_seconds"] = seconds
+		}
+	}
+	request.Input = input
+	request.Parameters = parameters
+	return nil
+}
+
+func normalizeMediaBillingDimensionMap(source string, input map[string]string) (map[string]string, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+	if len(input) > 16 {
+		return nil, fmt.Errorf("%s contains too many billing dimensions", source)
+	}
+	result := make(map[string]string, len(input))
+	for rawKey, rawValue := range input {
+		key := strings.ToLower(strings.TrimSpace(rawKey))
+		value := strings.TrimSpace(rawValue)
+		if !mediapricing.AllowedField(source, key) {
+			return nil, fmt.Errorf("%s.%s is not an allowed billing dimension", source, key)
+		}
+		if len(value) > 80 || strings.IndexByte(value, 0) >= 0 {
+			return nil, fmt.Errorf("%s.%s exceeds the billing dimension limit", source, key)
+		}
+		result[key] = value
+	}
+	return result, nil
+}
+
+func resolveMediaBillingPrice(
+	c *gin.Context,
+	relayInfo *relaycommon.RelayInfo,
+	request mediaBillingReserveRequest,
+	imageRequest *dto.ImageRequest,
+) (types.PriceData, *mediaBillingPricingSnapshot, error) {
+	record, exists, err := model.GetMediaBillingPriceRule(request.Model)
+	if err != nil {
+		return types.PriceData{}, nil, fmt.Errorf("load media pricing rule: %w", err)
+	}
+	if exists {
+		rule, err := record.Rule()
+		if err != nil {
+			return types.PriceData{}, nil, fmt.Errorf("stored media pricing rule is invalid: %w", err)
+		}
+		if rule.Enabled {
+			quote, err := mediapricing.Resolve(rule, mediapricing.Input{
+				ModelID: request.Model, MediaType: request.MediaType,
+				Count: request.N, DurationSeconds: request.DurationSeconds,
+				Input: request.Input, Parameters: request.Parameters,
+			})
+			if err != nil {
+				return types.PriceData{}, nil, err
+			}
+			priceData, exchangeRate, amountUSD, err := templateQuotePriceData(c, relayInfo, quote)
+			if err != nil {
+				return types.PriceData{}, nil, err
+			}
+			dimensions, err := common.Marshal(quote.ResolvedDimensions)
+			if err != nil {
+				return types.PriceData{}, nil, fmt.Errorf("encode resolved billing dimensions: %w", err)
+			}
+			return priceData, &mediaBillingPricingSnapshot{
+				Key: quote.PricingKey, Version: record.Version,
+				Unit: quote.Unit, Quantity: quote.Quantity,
+				UnitPrice: quote.UnitPrice.String(), Currency: quote.Currency,
+				Amount: quote.Amount.String(), ExchangeRate: exchangeRate,
+				AmountUSD: amountUSD, Dimensions: string(dimensions),
+			}, nil
+		}
+	}
+
+	var priceData types.PriceData
+	if request.MediaType == mediapricing.MediaTypeImage {
+		priceData, err = relayhelper.ModelPriceHelper(c, relayInfo, 0, imageRequest.GetTokenCountMeta())
+	} else {
+		priceData, err = relayhelper.ModelPriceHelperPerCall(c, relayInfo)
+		if err == nil {
+			priceData.AddOtherRatio("seconds", float64(request.DurationSeconds))
+			sizeRatio := 1.0
+			if request.Size == "1792x1024" || request.Size == "1024x1792" {
+				sizeRatio = 1.666667
+			}
+			priceData.AddOtherRatio("size", sizeRatio)
+			priceData.Quota, err = common.QuotaFromFloatStrict(
+				priceData.ApplyOtherRatiosToFloat(float64(priceData.Quota)),
+			)
+			priceData.QuotaToPreConsume = priceData.Quota
+		}
+	}
+	return priceData, nil, err
+}
+
+func templateQuotePriceData(
+	c *gin.Context,
+	relayInfo *relaycommon.RelayInfo,
+	quote mediapricing.Quote,
+) (types.PriceData, string, string, error) {
+	unitUSD := quote.UnitPrice
+	amountUSD := quote.Amount
+	exchangeRateSnapshot := "1"
+	if quote.Currency == mediapricing.CurrencyCNY {
+		rate := operation_setting.USDExchangeRate
+		if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+			return types.PriceData{}, "", "", errors.New("CNY media pricing requires a valid USD exchange rate")
+		}
+		exchangeRate := decimal.NewFromFloat(rate)
+		exchangeRateSnapshot = exchangeRate.String()
+		unitUSD = unitUSD.Div(exchangeRate)
+		amountUSD = amountUSD.Div(exchangeRate)
+	}
+	groupRatioInfo := relayhelper.HandleGroupRatio(c, relayInfo)
+	if groupRatioInfo.GroupRatio < 0 || math.IsNaN(groupRatioInfo.GroupRatio) || math.IsInf(groupRatioInfo.GroupRatio, 0) {
+		return types.PriceData{}, "", "", errors.New("media pricing group ratio is invalid")
+	}
+	quotaDecimal := amountUSD.
+		Mul(decimal.NewFromFloat(groupRatioInfo.GroupRatio)).
+		Mul(decimal.NewFromFloat(common.QuotaPerUnit))
+	quota, clamp := common.QuotaFromDecimalChecked(quotaDecimal)
+	if clamp != nil {
+		return types.PriceData{}, "", "", clamp
+	}
+	unitPriceFloat, _ := unitUSD.Float64()
+	freeModel := false
+	if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume &&
+		(quote.Amount.IsZero() || groupRatioInfo.GroupRatio == 0) {
+		quota = 0
+		freeModel = true
+	}
+	return types.PriceData{
+		FreeModel: freeModel, ModelPrice: unitPriceFloat,
+		UsePrice: true, Quota: quota, QuotaToPreConsume: quota,
+		GroupRatioInfo: groupRatioInfo,
+	}, exchangeRateSnapshot, amountUSD.String(), nil
 }
 
 func GetMediaBillingPrincipal(c *gin.Context) {

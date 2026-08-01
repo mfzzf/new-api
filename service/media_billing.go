@@ -49,6 +49,7 @@ func RecordMediaBillingConsumption(c *gin.Context, reservation *model.MediaBilli
 	if reservation.VideoSize != "" {
 		other["video_size"] = reservation.VideoSize
 	}
+	addMediaPricingLogFields(other, reservation)
 	model.RecordConsumeLog(c, reservation.UserId, model.RecordConsumeLogParams{
 		ChannelId: 0,
 		ModelName: reservation.ModelName,
@@ -234,6 +235,7 @@ func recordMediaBillingRefund(reservation *model.MediaBillingReservation) {
 	if reservation.VideoSize != "" {
 		other["video_size"] = reservation.VideoSize
 	}
+	addMediaPricingLogFields(other, reservation)
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    reservation.UserId,
 		LogType:   model.LogTypeRefund,
@@ -246,4 +248,26 @@ func recordMediaBillingRefund(reservation *model.MediaBillingReservation) {
 		Other:     other,
 		NodeName:  common.NodeName,
 	})
+}
+
+func addMediaPricingLogFields(other map[string]interface{}, reservation *model.MediaBillingReservation) {
+	if other == nil || reservation == nil || reservation.PricingKey == "" {
+		return
+	}
+	other["pricing_mode"] = "template"
+	other["pricing_key"] = reservation.PricingKey
+	other["pricing_version"] = reservation.PricingVersion
+	other["pricing_unit"] = reservation.PricingUnit
+	other["pricing_quantity"] = reservation.PricingQuantity
+	other["pricing_unit_price"] = reservation.PricingUnitPrice
+	other["pricing_currency"] = reservation.PricingCurrency
+	other["pricing_amount"] = reservation.PricingAmount
+	other["pricing_exchange_rate"] = reservation.PricingExchangeRate
+	other["pricing_amount_usd"] = reservation.PricingAmountUSD
+	if reservation.BillingDimensions != "" {
+		var dimensions map[string]string
+		if common.Unmarshal([]byte(reservation.BillingDimensions), &dimensions) == nil {
+			other["billing_dimensions"] = dimensions
+		}
+	}
 }

@@ -74,6 +74,15 @@ func SetApiRouter(router *gin.Engine) {
 			mediaBillingRoute.POST("/reservations/:id/refund", controller.RefundMediaBilling)
 		}
 
+		mediaPricingRoute := apiRouter.Group("/media/pricing/rules")
+		mediaPricingRoute.Use(middleware.AdminAuth())
+		{
+			mediaPricingRoute.GET("", controller.ListMediaPricingRules)
+			mediaPricingRoute.GET("/:model", controller.GetMediaPricingRule)
+			mediaPricingRoute.PUT("/:model", controller.PutMediaPricingRule)
+			mediaPricingRoute.DELETE("/:model", controller.DeleteMediaPricingRule)
+		}
+
 		userRoute := apiRouter.Group("/user")
 		{
 			userRoute.POST("/auth/refresh", middleware.SessionCookieOriginGuard(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.RefreshAuth)

@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -41,11 +41,16 @@ import { Textarea } from '@/components/ui/textarea'
 
 import {
   createMediaModel,
+  deleteMediaPricingRule,
+  getMediaPricingRule,
   mediaControlQueryKeys,
+  putMediaPricingRule,
   updateMediaModel,
 } from '../api'
+import { prepareMediaPricingRule } from '../lib/media-pricing'
 import { mediaModelFormSchema, type MediaModelFormValues } from '../lib/schemas'
-import type { MediaModel, MediaModelInput } from '../types'
+import type { MediaModel, MediaModelInput, MediaPricingRule } from '../types'
+import { MediaPricingEditor } from './media-pricing-editor'
 
 const formID = 'media-model-form'
 const selectClassName =
@@ -57,12 +62,19 @@ type MediaModelDialogProps = {
   current: MediaModel | null
 }
 
+type SaveMediaModelInput = {
+  model: MediaModelInput
+  pricing: MediaPricingRule | null
+}
+
 export function MediaModelDialog(props: MediaModelDialogProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const isEdit = props.current !== null
   const current = props.current
   const open = props.open
+  const [pricing, setPricing] = useState<MediaPricingRule | null>(null)
+  const [pricingLoading, setPricingLoading] = useState(false)
   const form = useForm<MediaModelFormValues>({
     resolver: zodResolver(mediaModelFormSchema),
     defaultValues: {
@@ -76,13 +88,29 @@ export function MediaModelDialog(props: MediaModelDialogProps) {
     },
   })
   const mutation = useMutation({
-    mutationFn: (input: MediaModelInput) =>
-      props.current
-        ? updateMediaModel(props.current.id, input)
-        : createMediaModel(input),
-    onSuccess: () => {
+    mutationFn: async ({
+      model: input,
+      pricing: pricingRule,
+    }: SaveMediaModelInput) => {
+      const saved = props.current
+        ? await updateMediaModel(props.current.id, input)
+        : await createMediaModel(input)
+      if (pricingRule) {
+        await putMediaPricingRule(saved.key, pricingRule)
+      } else if (props.current) {
+        await deleteMediaPricingRule(props.current.key)
+      }
+      if (props.current && props.current.key !== saved.key) {
+        await deleteMediaPricingRule(props.current.key)
+      }
+      return saved
+    },
+    onSuccess: (saved) => {
       void queryClient.invalidateQueries({
         queryKey: mediaControlQueryKeys.models(),
+      })
+      void queryClient.invalidateQueries({
+        queryKey: mediaControlQueryKeys.pricing(saved.key),
       })
       toast.success(t(isEdit ? 'Model updated' : 'Model created'))
       props.onOpenChange(false)
@@ -114,17 +142,78 @@ export function MediaModelDialog(props: MediaModelDialogProps) {
     )
   }, [current, form, open])
 
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    if (!current) {
+      setPricing(null)
+      setPricingLoading(false)
+      return
+    }
+    setPricingLoading(true)
+    void getMediaPricingRule(current.key)
+      .then((record) => {
+        if (cancelled) return
+        if (!record) {
+          setPricing(null)
+          return
+        }
+        const {
+          version: _version,
+          created_at: _createdAt,
+          updated_at: _updatedAt,
+          ...rule
+        } = record
+        setPricing(rule)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : t('Failed to load media pricing')
+          )
+          setPricing(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPricingLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [current, open, t])
+
   const submit = (values: MediaModelFormValues) => {
+    let preparedPricing: MediaPricingRule | null
+    try {
+      preparedPricing = prepareMediaPricingRule(
+        pricing,
+        values.key,
+        values.media_type
+      )
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t('Invalid media pricing')
+      )
+      return
+    }
     mutation.mutate({
-      key: values.key,
-      display_name: values.display_name,
-      media_type: values.media_type,
-      description: values.description,
-      logo_url: values.logo_url,
-      metadata: JSON.parse(values.metadata_json) as Record<string, unknown>,
-      enabled: values.enabled,
+      model: {
+        key: values.key,
+        display_name: values.display_name,
+        media_type: values.media_type,
+        description: values.description,
+        logo_url: values.logo_url,
+        metadata: JSON.parse(values.metadata_json) as Record<string, unknown>,
+        enabled: values.enabled,
+      },
+      pricing: preparedPricing,
     })
   }
+
+  const selectedModelID = form.watch('key')
+  const selectedMediaType = form.watch('media_type')
 
   return (
     <Dialog
@@ -136,18 +225,23 @@ export function MediaModelDialog(props: MediaModelDialogProps) {
       description={t(
         'Model metadata is owned by the media control plane and is separate from New API LLM models.'
       )}
-      contentHeight='min(620px, calc(100vh - 14rem))'
+      contentHeight='min(720px, calc(100vh - 14rem))'
+      contentClassName='sm:max-w-5xl'
       footer={
         <>
           <Button
             type='button'
             variant='outline'
             onClick={() => props.onOpenChange(false)}
-            disabled={mutation.isPending}
+            disabled={mutation.isPending || pricingLoading}
           >
             {t('Cancel')}
           </Button>
-          <Button type='submit' form={formID} disabled={mutation.isPending}>
+          <Button
+            type='submit'
+            form={formID}
+            disabled={mutation.isPending || pricingLoading}
+          >
             {mutation.isPending && <Loader2 className='animate-spin' />}
             {t('Save')}
           </Button>
@@ -272,6 +366,13 @@ export function MediaModelDialog(props: MediaModelDialogProps) {
                 </div>
               </FormItem>
             )}
+          />
+          <MediaPricingEditor
+            modelID={selectedModelID}
+            mediaType={selectedMediaType}
+            value={pricing}
+            loading={pricingLoading}
+            onChange={setPricing}
           />
         </form>
       </Form>

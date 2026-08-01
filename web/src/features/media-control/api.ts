@@ -21,6 +21,7 @@ import { t } from 'i18next'
 import { toast } from 'sonner'
 
 import { refreshAuthentication } from '@/lib/auth-session'
+import { api } from '@/lib/http-client'
 import { useAuthStore } from '@/stores/auth-store'
 
 import type {
@@ -30,6 +31,8 @@ import type {
   MediaOperationLogQuery,
   MediaProvider,
   MediaProviderInput,
+  MediaPricingRule,
+  MediaPricingRuleRecord,
   RouteNode,
   RouteNodeInput,
 } from './types'
@@ -111,6 +114,8 @@ export const mediaControlQueryKeys = {
   models: () => [...mediaControlQueryKeys.all, 'models'] as const,
   providers: () => [...mediaControlQueryKeys.all, 'providers'] as const,
   routeNodes: () => [...mediaControlQueryKeys.all, 'route-nodes'] as const,
+  pricing: (model: string) =>
+    [...mediaControlQueryKeys.all, 'pricing', model] as const,
 }
 
 export function listMediaModels(): Promise<MediaModel[]> {
@@ -182,4 +187,41 @@ export function listMediaOperationLogs(
       params: query,
     })
   )
+}
+
+export async function getMediaPricingRule(
+  model: string
+): Promise<MediaPricingRuleRecord | null> {
+  try {
+    return await getData(
+      api.get(`/api/media/pricing/rules/${encodeURIComponent(model)}`, {
+        skipErrorHandler: true,
+      })
+    )
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+export function putMediaPricingRule(
+  model: string,
+  rule: MediaPricingRule
+): Promise<MediaPricingRuleRecord> {
+  return getData(
+    api.put(`/api/media/pricing/rules/${encodeURIComponent(model)}`, rule)
+  )
+}
+
+export async function deleteMediaPricingRule(model: string): Promise<void> {
+  try {
+    await api.delete(`/api/media/pricing/rules/${encodeURIComponent(model)}`, {
+      skipErrorHandler: true,
+    })
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) return
+    throw error
+  }
 }

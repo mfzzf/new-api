@@ -81,6 +81,16 @@ func TestMediaBillingReservationPersistsBoundedVideoDimensions(t *testing.T) {
 		ImageCount:           1,
 		VideoDurationSeconds: 8,
 		VideoSize:            "1280x720",
+		PricingKey:           "video-pro-with_video-720p",
+		PricingVersion:       3,
+		PricingUnit:          "second",
+		PricingQuantity:      8,
+		PricingUnitPrice:     "0.9",
+		PricingCurrency:      "CNY",
+		PricingAmount:        "7.2",
+		PricingExchangeRate:  "7.3",
+		PricingAmountUSD:     "0.9863013698630137",
+		BillingDimensions:    `{"resolution":"720p","video_input":"with_video"}`,
 		Group:                "default",
 		Status:               MediaBillingStatusReserving,
 		CreatedAt:            now,
@@ -94,6 +104,10 @@ func TestMediaBillingReservationPersistsBoundedVideoDimensions(t *testing.T) {
 	require.Equal(t, "video", stored.MediaType)
 	require.Equal(t, 8, stored.VideoDurationSeconds)
 	require.Equal(t, "1280x720", stored.VideoSize)
+	require.Equal(t, "video-pro-with_video-720p", stored.PricingKey)
+	require.Equal(t, 3, stored.PricingVersion)
+	require.Equal(t, "7.2", stored.PricingAmount)
+	require.Equal(t, "7.3", stored.PricingExchangeRate)
 	require.Empty(t, stored.ImageSize)
 	require.Empty(t, stored.ImageQuality)
 }

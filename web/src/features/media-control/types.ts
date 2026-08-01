@@ -59,6 +59,40 @@ export type MediaModelInput = Omit<
   'id' | 'created_at' | 'updated_at'
 >
 
+export type MediaPricingRange = {
+  gt?: number
+  gte?: number
+  lt?: number
+  lte?: number
+  value: string
+}
+
+export type MediaPricingDimension = {
+  source: 'input' | 'parameters'
+  field: string
+  placeholder: string
+  mapping?: Record<string, string>
+  ranges?: MediaPricingRange[]
+}
+
+export type MediaPricingRule = {
+  model_id: string
+  media_type: MediaType
+  enabled: boolean
+  unit: 'image' | 'second'
+  currency: 'CNY' | 'USD'
+  allowed_duration?: number[]
+  dimensions?: MediaPricingDimension[]
+  template: string
+  prices: Record<string, string>
+}
+
+export type MediaPricingRuleRecord = MediaPricingRule & {
+  version: number
+  created_at: number
+  updated_at: number
+}
+
 export type MediaProvider = {
   id: string
   code: string
