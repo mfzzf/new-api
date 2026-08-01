@@ -66,3 +66,34 @@ func TestMediaBillingReservationIdempotencyAndTerminalClaims(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, settled)
 }
+
+func TestMediaBillingReservationPersistsBoundedVideoDimensions(t *testing.T) {
+	truncateTables(t)
+	now := time.Now().Unix()
+	reservation := &MediaBillingReservation{
+		ID:                   "mb_video",
+		UserId:               2,
+		TokenId:              22,
+		IdempotencyKeyHash:   strings.Repeat("c", 64),
+		RequestFingerprint:   strings.Repeat("d", 64),
+		ModelName:            "video-pro",
+		MediaType:            "video",
+		ImageCount:           1,
+		VideoDurationSeconds: 8,
+		VideoSize:            "1280x720",
+		Group:                "default",
+		Status:               MediaBillingStatusReserving,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+	require.NoError(t, InsertMediaBillingReservation(reservation))
+
+	stored, found, err := GetMediaBillingReservationByID(reservation.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "video", stored.MediaType)
+	require.Equal(t, 8, stored.VideoDurationSeconds)
+	require.Equal(t, "1280x720", stored.VideoSize)
+	require.Empty(t, stored.ImageSize)
+	require.Empty(t, stored.ImageQuality)
+}

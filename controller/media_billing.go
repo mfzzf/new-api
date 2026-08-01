@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type mediaBillingReserveRequest struct {
 	N                  int    `json:"n"`
 	Size               string `json:"size"`
 	Quality            string `json:"quality"`
+	DurationSeconds    int    `json:"duration_seconds"`
 }
 
 type mediaBillingRefundRequest struct {
@@ -43,6 +45,13 @@ type mediaBillingResponse struct {
 	BillingID string `json:"billing_id"`
 	Status    string `json:"status"`
 	Quota     int    `json:"quota"`
+	UserID    int    `json:"user_id"`
+	TokenID   int    `json:"token_id"`
+}
+
+type mediaBillingPrincipalResponse struct {
+	UserID  int `json:"user_id"`
+	TokenID int `json:"token_id"`
 }
 
 func ReserveMediaBilling(c *gin.Context) {
@@ -65,8 +74,8 @@ func ReserveMediaBilling(c *gin.Context) {
 		writeMediaBillingError(c, http.StatusBadRequest, "invalid_request_fingerprint", "request_fingerprint must be a lowercase SHA-256 digest")
 		return
 	}
-	if request.MediaType != "image" {
-		writeMediaBillingError(c, http.StatusBadRequest, "unsupported_media_type", "only image billing reservations are supported")
+	if request.MediaType != "image" && request.MediaType != "video" {
+		writeMediaBillingError(c, http.StatusBadRequest, "unsupported_media_type", "media_type must be image or video")
 		return
 	}
 	if request.Model == "" || len(request.Model) > 191 {
@@ -77,11 +86,25 @@ func ReserveMediaBilling(c *gin.Context) {
 		request.N = 1
 	}
 	if request.N != 1 {
-		writeMediaBillingError(c, http.StatusBadRequest, "invalid_image_count", "n must be 1")
+		writeMediaBillingError(c, http.StatusBadRequest, "invalid_media_count", "n must be 1")
 		return
 	}
 	if len(request.Size) > 40 || len(request.Quality) > 40 {
-		writeMediaBillingError(c, http.StatusBadRequest, "invalid_image_dimensions", "size and quality must not exceed 40 bytes")
+		writeMediaBillingError(c, http.StatusBadRequest, "invalid_media_dimensions", "size and quality must not exceed 40 bytes")
+		return
+	}
+	if request.MediaType == "image" && request.DurationSeconds != 0 {
+		writeMediaBillingError(c, http.StatusBadRequest, "invalid_image_duration", "duration_seconds is not supported for image billing")
+		return
+	}
+	if request.MediaType == "video" &&
+		(request.DurationSeconds < 1 || request.DurationSeconds > relaycommon.MaxTaskDurationSeconds) {
+		writeMediaBillingError(
+			c,
+			http.StatusBadRequest,
+			"invalid_video_duration",
+			fmt.Sprintf("duration_seconds must be between 1 and %d", relaycommon.MaxTaskDurationSeconds),
+		)
 		return
 	}
 	if !middleware.ValidateTokenModelAccess(c, request.Model) {
@@ -116,8 +139,25 @@ func ReserveMediaBilling(c *gin.Context) {
 	}
 	relayInfo := relaycommon.GenRelayInfoImage(c, imageRequest)
 	relayInfo.ForcePreConsume = true
-	meta := imageRequest.GetTokenCountMeta()
-	priceData, err := relayhelper.ModelPriceHelper(c, relayInfo, 0, meta)
+	var priceData types.PriceData
+	var err error
+	if request.MediaType == "image" {
+		priceData, err = relayhelper.ModelPriceHelper(c, relayInfo, 0, imageRequest.GetTokenCountMeta())
+	} else {
+		priceData, err = relayhelper.ModelPriceHelperPerCall(c, relayInfo)
+		if err == nil {
+			priceData.AddOtherRatio("seconds", float64(request.DurationSeconds))
+			sizeRatio := 1.0
+			if request.Size == "1792x1024" || request.Size == "1024x1792" {
+				sizeRatio = 1.666667
+			}
+			priceData.AddOtherRatio("size", sizeRatio)
+			priceData.Quota, err = common.QuotaFromFloatStrict(
+				priceData.ApplyOtherRatiosToFloat(float64(priceData.Quota)),
+			)
+			priceData.QuotaToPreConsume = priceData.Quota
+		}
+	}
 	if err != nil {
 		writeMediaBillingError(c, http.StatusBadRequest, "media_model_price_error", err.Error())
 		return
@@ -127,23 +167,35 @@ func ReserveMediaBilling(c *gin.Context) {
 		return
 	}
 
+	imageSize := ""
+	imageQuality := ""
+	videoSize := ""
+	if request.MediaType == "image" {
+		imageSize = request.Size
+		imageQuality = request.Quality
+	} else {
+		videoSize = request.Size
+	}
+
 	now := time.Now().Unix()
 	reservation := &model.MediaBillingReservation{
-		ID:                 "mb_" + common.GetUUID(),
-		UserId:             relayInfo.UserId,
-		TokenId:            relayInfo.TokenId,
-		TokenUnlimited:     relayInfo.TokenUnlimited,
-		IdempotencyKeyHash: keyHashString,
-		RequestFingerprint: request.RequestFingerprint,
-		ModelName:          request.Model,
-		MediaType:          request.MediaType,
-		ImageSize:          request.Size,
-		ImageQuality:       request.Quality,
-		ImageCount:         request.N,
-		Group:              relayInfo.UsingGroup,
-		Status:             model.MediaBillingStatusReserving,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		ID:                   "mb_" + common.GetUUID(),
+		UserId:               relayInfo.UserId,
+		TokenId:              relayInfo.TokenId,
+		TokenUnlimited:       relayInfo.TokenUnlimited,
+		IdempotencyKeyHash:   keyHashString,
+		RequestFingerprint:   request.RequestFingerprint,
+		ModelName:            request.Model,
+		MediaType:            request.MediaType,
+		ImageSize:            imageSize,
+		ImageQuality:         imageQuality,
+		ImageCount:           request.N,
+		VideoDurationSeconds: request.DurationSeconds,
+		VideoSize:            videoSize,
+		Group:                relayInfo.UsingGroup,
+		Status:               model.MediaBillingStatusReserving,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if err := model.InsertMediaBillingReservation(reservation); err != nil {
 		if replayed, handled := replayMediaBillingReservation(c, tokenID, keyHashString, request.RequestFingerprint); handled {
@@ -191,6 +243,21 @@ func ReserveMediaBilling(c *gin.Context) {
 	}
 	service.RecordMediaBillingConsumption(c, reservation)
 	writeMediaBillingReservation(c, reservation)
+}
+
+func GetMediaBillingPrincipal(c *gin.Context) {
+	userID := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+	if userID <= 0 || tokenID <= 0 {
+		writeMediaBillingError(
+			c,
+			http.StatusInternalServerError,
+			"media_principal_unavailable",
+			"authenticated media principal is unavailable",
+		)
+		return
+	}
+	c.JSON(http.StatusOK, mediaBillingPrincipalResponse{UserID: userID, TokenID: tokenID})
 }
 
 func SettleMediaBilling(c *gin.Context) {
@@ -263,6 +330,8 @@ func writeMediaBillingReservation(c *gin.Context, reservation *model.MediaBillin
 		BillingID: reservation.ID,
 		Status:    reservation.Status,
 		Quota:     reservation.Quota,
+		UserID:    reservation.UserId,
+		TokenID:   reservation.TokenId,
 	})
 }
 

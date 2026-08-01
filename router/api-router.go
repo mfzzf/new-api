@@ -68,6 +68,7 @@ func SetApiRouter(router *gin.Engine) {
 		mediaBillingRoute := apiRouter.Group("/media/billing")
 		mediaBillingRoute.Use(middleware.MediaBillingServiceAuth())
 		{
+			mediaBillingRoute.POST("/principal", middleware.TokenAuth(), controller.GetMediaBillingPrincipal)
 			mediaBillingRoute.POST("/reservations", middleware.TokenAuth(), controller.ReserveMediaBilling)
 			mediaBillingRoute.POST("/reservations/:id/settle", controller.SettleMediaBilling)
 			mediaBillingRoute.POST("/reservations/:id/refund", controller.RefundMediaBilling)

@@ -30,16 +30,24 @@ func RecordMediaBillingConsumption(c *gin.Context, reservation *model.MediaBilli
 		"model_price":    reservation.ModelPrice,
 		"group_ratio":    reservation.GroupRatio,
 		"billing_source": reservation.BillingSource,
-		"image_count":    reservation.ImageCount,
 	}
 	if reservation.ModelRatio > 0 {
 		other["model_ratio"] = reservation.ModelRatio
+	}
+	if reservation.MediaType == "image" {
+		other["image_count"] = reservation.ImageCount
 	}
 	if reservation.ImageSize != "" {
 		other["image_size"] = reservation.ImageSize
 	}
 	if reservation.ImageQuality != "" {
 		other["image_quality"] = reservation.ImageQuality
+	}
+	if reservation.VideoDurationSeconds > 0 {
+		other["video_duration_seconds"] = reservation.VideoDurationSeconds
+	}
+	if reservation.VideoSize != "" {
+		other["video_size"] = reservation.VideoSize
 	}
 	model.RecordConsumeLog(c, reservation.UserId, model.RecordConsumeLogParams{
 		ChannelId: 0,
@@ -219,6 +227,12 @@ func recordMediaBillingRefund(reservation *model.MediaBillingReservation) {
 	}
 	if reservation.ImageSize != "" {
 		other["image_size"] = reservation.ImageSize
+	}
+	if reservation.VideoDurationSeconds > 0 {
+		other["video_duration_seconds"] = reservation.VideoDurationSeconds
+	}
+	if reservation.VideoSize != "" {
+		other["video_size"] = reservation.VideoSize
 	}
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    reservation.UserId,

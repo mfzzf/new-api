@@ -15,28 +15,30 @@ const (
 // dimensions only; prompts, source images, and provider responses must never be
 // persisted here.
 type MediaBillingReservation struct {
-	ID                 string  `json:"id" gorm:"primaryKey;type:varchar(64)"`
-	UserId             int     `json:"user_id" gorm:"index;not null"`
-	TokenId            int     `json:"token_id" gorm:"index;not null;uniqueIndex:idx_media_billing_token_idempotency,priority:1"`
-	TokenUnlimited     bool    `json:"token_unlimited" gorm:"not null;default:false"`
-	IdempotencyKeyHash string  `json:"-" gorm:"type:char(64);not null;uniqueIndex:idx_media_billing_token_idempotency,priority:2"`
-	RequestFingerprint string  `json:"-" gorm:"type:char(64);not null"`
-	ModelName          string  `json:"model_name" gorm:"type:varchar(191);index;not null"`
-	MediaType          string  `json:"media_type" gorm:"type:varchar(20);not null"`
-	ImageSize          string  `json:"image_size" gorm:"type:varchar(40)"`
-	ImageQuality       string  `json:"image_quality" gorm:"type:varchar(40)"`
-	ImageCount         int     `json:"image_count" gorm:"not null;default:1"`
-	Group              string  `json:"group" gorm:"type:varchar(50);not null"`
-	Quota              int     `json:"quota" gorm:"not null;default:0"`
-	BillingSource      string  `json:"billing_source" gorm:"type:varchar(20)"`
-	SubscriptionId     int     `json:"subscription_id" gorm:"index"`
-	ModelPrice         float64 `json:"model_price"`
-	ModelRatio         float64 `json:"model_ratio"`
-	GroupRatio         float64 `json:"group_ratio"`
-	Status             string  `json:"status" gorm:"type:varchar(20);index;not null"`
-	FailureReason      string  `json:"failure_reason" gorm:"type:text"`
-	CreatedAt          int64   `json:"created_at" gorm:"index;not null"`
-	UpdatedAt          int64   `json:"updated_at" gorm:"not null"`
+	ID                   string  `json:"id" gorm:"primaryKey;type:varchar(64)"`
+	UserId               int     `json:"user_id" gorm:"index;not null"`
+	TokenId              int     `json:"token_id" gorm:"index;not null;uniqueIndex:idx_media_billing_token_idempotency,priority:1"`
+	TokenUnlimited       bool    `json:"token_unlimited" gorm:"not null;default:false"`
+	IdempotencyKeyHash   string  `json:"-" gorm:"type:char(64);not null;uniqueIndex:idx_media_billing_token_idempotency,priority:2"`
+	RequestFingerprint   string  `json:"-" gorm:"type:char(64);not null"`
+	ModelName            string  `json:"model_name" gorm:"type:varchar(191);index;not null"`
+	MediaType            string  `json:"media_type" gorm:"type:varchar(20);not null"`
+	ImageSize            string  `json:"image_size" gorm:"type:varchar(40)"`
+	ImageQuality         string  `json:"image_quality" gorm:"type:varchar(40)"`
+	ImageCount           int     `json:"image_count" gorm:"not null;default:1"`
+	VideoDurationSeconds int     `json:"video_duration_seconds" gorm:"not null;default:0"`
+	VideoSize            string  `json:"video_size" gorm:"type:varchar(40)"`
+	Group                string  `json:"group" gorm:"type:varchar(50);not null"`
+	Quota                int     `json:"quota" gorm:"not null;default:0"`
+	BillingSource        string  `json:"billing_source" gorm:"type:varchar(20)"`
+	SubscriptionId       int     `json:"subscription_id" gorm:"index"`
+	ModelPrice           float64 `json:"model_price"`
+	ModelRatio           float64 `json:"model_ratio"`
+	GroupRatio           float64 `json:"group_ratio"`
+	Status               string  `json:"status" gorm:"type:varchar(20);index;not null"`
+	FailureReason        string  `json:"failure_reason" gorm:"type:text"`
+	CreatedAt            int64   `json:"created_at" gorm:"index;not null"`
+	UpdatedAt            int64   `json:"updated_at" gorm:"not null"`
 }
 
 func InsertMediaBillingReservation(reservation *MediaBillingReservation) error {
